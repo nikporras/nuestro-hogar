@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Local pre-commit secret guard (docs/THREAT_MODEL.md, I2).
+# Uses gitleaks if installed; always runs a lightweight pattern fallback so the
+# guard works even on machines without gitleaks. CI is the authoritative check.
+set -euo pipefail
+
+# 1) gitleaks, if available
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --no-banner; then
+    echo "✖ gitleaks found a potential secret in staged changes. Commit aborted." >&2
+    exit 1
+  fi
+fi
+
+# 2) lightweight fallback: scan staged additions for obvious key shapes
+staged_diff="$(git diff --cached --no-color || true)"
+patterns='sk-ant-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}'
+if printf '%s' "$staged_diff" | grep -nE "^\+" | grep -Eq "$patterns"; then
+  echo "✖ A value matching a known secret pattern is staged. Commit aborted." >&2
+  echo "  Remove the secret, use an env var, and see .env.example." >&2
+  exit 1
+fi
+
+exit 0

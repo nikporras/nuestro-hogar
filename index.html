@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta name="theme-color" content="#667eea" />
 <!-- Phase 1: fully self-contained, no external calls, no secrets. CSP locks everything to 'self'. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icons/icon-192.png" />
 <title>Nuestro Hogar</title>
 <style>
   :root{
@@ -529,6 +531,15 @@
 
   render();
 })();
+
+// Register the Service Worker for offline use (no-op when opened via file://).
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("./sw.js").catch(function (e) {
+      console.warn("SW registration failed:", e);
+    });
+  });
+}
 </script>
 </body>
 </html>
