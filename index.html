@@ -210,13 +210,22 @@
 
   var S = {
     chores: load("nh_chores", defaultChores()),
-    names:  load("nh_names", ["Nico","Sam"]),
+    names:  load("nh_names", ["Nico","Caro"]),
     doneLog:load("nh_doneLog", seedDoneLog()),
     tab: "today",
     selectedWeekDay: TODAY.getDay(),
     filterPerson: null,
     modal: null
   };
+
+  // One-time: move anyone still on the old default names to the new ones.
+  try{
+    if(!localStorage.getItem("nh_names_migrated")){
+      if(S.names[0]==="Nico" && S.names[1]==="Sam"){ S.names=["Nico","Caro"]; }
+      localStorage.setItem("nh_names_migrated","1");
+      save();
+    }
+  }catch(e){}
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
   function save(){ try{
@@ -465,6 +474,27 @@
       h("div",{class:"modal"}, h("h3",{text:"Nueva tarea"}), modalBody));
   }
 
+  // ---------- names modal ----------
+  var nameDraft;
+  function openNames(){ nameDraft=[S.names[0], S.names[1]]; S.modal="names"; render(); }
+  function modalNames(){
+    function field(label,input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
+    var in0=h("input",{type:"text", value:nameDraft[0], onInput:function(e){ nameDraft[0]=e.target.value; }});
+    var in1=h("input",{type:"text", value:nameDraft[1], onInput:function(e){ nameDraft[1]=e.target.value; }});
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
+      h("div",{class:"modal"}, h("h3",{text:"Nombres"}),
+        field("Persona 1", in0),
+        field("Persona 2", in1),
+        h("div",{class:"modal-actions"},
+          h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ S.modal=null; render(); }}),
+          h("button",{class:"btn primary", text:"Guardar", onClick:function(){
+            S.names=[ (nameDraft[0].trim()||"Persona 1"), (nameDraft[1].trim()||"Persona 2") ];
+            save(); S.modal=null; render();
+          }})
+        )
+      ));
+  }
+
   // ---------- header / nav / render ----------
   function header(){
     var todays=choresForDay(TODAY);
@@ -472,7 +502,7 @@
     var pct=todays.length? Math.round(done/todays.length*100):0;
     var hd=h("div",{class:"header"},
       h("div",{class:"title"}, "🏠", h("span",{text:"Nuestro Hogar"})),
-      h("div",{class:"sub", text:S.names[0]+" & "+S.names[1]}),
+      h("div",{class:"sub", style:"cursor:pointer", text:S.names[0]+" & "+S.names[1]+"  ✏️", onClick:openNames}),
       h("div",{class:"progress-wrap"},
         h("div",{class:"progress-top"}, h("span",{text:"Progreso de hoy"}), h("span",{text:done+" de "+todays.length})),
         h("div",{class:"progress-bar"}, h("div",{class:"progress-fill", style:"width:"+pct+"%"}))
@@ -508,6 +538,7 @@
     if(S.tab==="today"||S.tab==="week"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
+    if(S.modal==="names") root.appendChild(modalNames());
   }
 
   render();
