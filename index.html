@@ -578,7 +578,8 @@
   // Generates recurring calendar events so the phone's own calendar fires the
   // reminders. No network, no backend — just a downloaded file the user imports.
   function p2(n){ return (n<10?"0":"")+n; }
-  function icsLocal(d){ return d.getFullYear()+p2(d.getMonth()+1)+p2(d.getDate())+"T"+p2(d.getHours())+p2(d.getMinutes())+"00"; }
+  function icsDate(d){ return d.getFullYear()+p2(d.getMonth()+1)+p2(d.getDate()); }
+  function icsNextDay(d){ var x=new Date(d); x.setDate(x.getDate()+1); return x; }
   function icsStampUTC(){ var d=new Date(); return d.getUTCFullYear()+p2(d.getUTCMonth()+1)+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+p2(d.getUTCMinutes())+p2(d.getUTCSeconds())+"Z"; }
   function icsEscape(s){ return String(s).replace(/([\\;,])/g,"\\$1").replace(/\n/g,"\\n"); }
   function firstWeekdayOnOrAfter(date, weekdays){
@@ -599,7 +600,7 @@
         dt=firstWeekdayOnOrAfter(base, wds);
         rrule="FREQ=WEEKLY;BYDAY="+wds.map(function(w){return BYDAY[w];}).join(",");
       }
-      else if(c.freq==="Quincenal"){ var s=new Date(c.startDate); s.setHours(8,0,0,0); dt=s; rrule="FREQ=WEEKLY;INTERVAL=2"; }
+      else if(c.freq==="Quincenal"){ var sp=String(c.startDate).split("-"); dt=new Date(+sp[0],(+sp[1])-1,+sp[2]); rrule="FREQ=WEEKLY;INTERVAL=2"; }
       else if(c.freq==="Mensual"){
         var dom=c.dayOfMonth||1;
         var m=new Date(TODAY.getFullYear(),TODAY.getMonth(),dom,8,0,0,0);
@@ -608,9 +609,10 @@
       }
       else { return; }
       var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+S.names[c.assignee]);
-      L.push("BEGIN:VEVENT","UID:nh-"+c.id+"@nuestro-hogar","DTSTAMP:"+stamp,"DTSTART:"+icsLocal(dt),
-        "DURATION:PT30M","RRULE:"+rrule,"SUMMARY:"+summary,
-        "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:-PT0M","END:VALARM","END:VEVENT");
+      L.push("BEGIN:VEVENT","UID:nh-"+c.id+"@nuestro-hogar","DTSTAMP:"+stamp,
+        "DTSTART;VALUE=DATE:"+icsDate(dt),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(dt)),
+        "RRULE:"+rrule,"SUMMARY:"+summary,
+        "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:PT9H","END:VALARM","END:VEVENT");
     });
     L.push("END:VCALENDAR");
     return L.join("\r\n");
@@ -624,6 +626,34 @@
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
     }catch(e){ alert("No se pudo exportar el calendario."); }
+  }
+
+  // ---------- all tasks tab ----------
+  function taskRow(c){
+    var pc=PC[c.assignee]; var eff=effortOf(c);
+    return h("div",{class:"card", style:"cursor:pointer", onClick:function(){ openEdit(c); }},
+      h("div",{class:"card-icon", text:c.icon}),
+      h("div",{class:"card-main"},
+        h("div",{class:"card-name", text:(c.pinned?"📌 ":"")+c.name}),
+        h("div",{class:"card-tags"},
+          h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
+          h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
+          h("span",{class:"tag person", style:"background:"+pc.c, text:S.names[c.assignee]})
+        )
+      ),
+      h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
+    );
+  }
+  function viewTasks(){
+    var wrap=h("div",{class:"content"});
+    var list=S.chores.filter(function(c){ return S.filterPerson===null || c.assignee===S.filterPerson; });
+    wrap.appendChild(h("div",{class:"section-title", text:"Todas las tareas ("+list.length+")"}));
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Toca + para agregar una tarea")); }
+    else {
+      list.slice().sort(function(a,b){ return (a.assignee-b.assignee) || String(a.name).localeCompare(String(b.name)); })
+        .forEach(function(c){ wrap.appendChild(taskRow(c)); });
+    }
+    return wrap;
   }
 
   // ---------- header / nav / render ----------
@@ -647,7 +677,7 @@
   }
 
   function nav(){
-    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["logros","🏆","Logros"]];
+    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["tasks","📋","Tareas"],["logros","🏆","Logros"]];
     var n=h("div",{class:"nav"});
     tabs.forEach(function(t){
       n.appendChild(h("button",{class:(S.tab===t[0]?"active":""), onClick:function(){ S.tab=t[0]; render(); }},
@@ -664,9 +694,10 @@
     if(S.tab==="today") body=viewToday();
     else if(S.tab==="week") body=viewWeek();
     else if(S.tab==="month") body=viewMonth();
+    else if(S.tab==="tasks") body=viewTasks();
     else body=viewLogros();
     root.appendChild(body);
-    if(S.tab==="today"||S.tab==="week"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
+    if(S.tab==="today"||S.tab==="week"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="names") root.appendChild(modalNames());
