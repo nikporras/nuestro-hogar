@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
@@ -8,7 +8,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-<title>Nuestro Hogar</title>
+<title>Our Home</title>
 <style>
   :root{
     --accent1:#667eea; --accent2:#764ba2;
@@ -167,12 +167,13 @@
 
   // ---------- constants ----------
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
-  var FC = { "Diario":"#FF6B35", "Semanal":"#4CAF50", "Quincenal":"#9C27B0", "Mensual":"#FF9800" };
+  var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
-  var DIFF = { 1:{label:"Ligera",color:"#43A047"}, 2:{label:"Media",color:"#FB8C00"}, 3:{label:"Pesada",color:"#E53935"} };
+  var DIFF = { 1:{label:"Light",color:"#43A047"}, 2:{label:"Medium",color:"#FB8C00"}, 3:{label:"Heavy",color:"#E53935"} };
   function effortOf(c){ return c.effort||2; }
-  var DOW_SHORT = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
-  var MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  var FREQ_MIG = { "Diario":"Daily", "Semanal":"Weekly", "Quincenal":"Biweekly", "Mensual":"Monthly" };
+  var DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
   // ---------- date helpers ----------
   function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
@@ -185,12 +186,12 @@
   // The ONLY function that decides whether a chore shows on a given date.
   function isDue(ch, date){
     switch(ch.freq){
-      case "Diario":    return true;
-      case "Semanal":   return (ch.weekdays||[]).indexOf(date.getDay())>=0;
-      case "Quincenal": { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
+      case "Daily":     return true;
+      case "Weekly":    return (ch.weekdays||[]).indexOf(date.getDay())>=0;
+      case "Biweekly":  { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
                           var d2=new Date(date); d2.setHours(0,0,0,0);
                           var diff=daysBetween(anchor,d2); return diff>=0 && diff%14===0; }
-      case "Mensual":   return date.getDate()===ch.dayOfMonth;
+      case "Monthly":   return date.getDate()===ch.dayOfMonth;
       default: return false;
     }
   }
@@ -200,14 +201,14 @@
   function defaultChores(){
     var monAnchor = ymd(startOfWeek(TODAY)); // a Monday for the quincenal anchor
     return [
-      {id:1, name:"Lavar los platos",   freq:"Diario",    assignee:0, icon:"🍽️", effort:2},
-      {id:2, name:"Regar las plantas",  freq:"Diario",    assignee:1, icon:"🌱", effort:1},
-      {id:3, name:"Sacar la basura",    freq:"Semanal",   assignee:1, icon:"🗑️", weekdays:[1,4], effort:1},
-      {id:4, name:"Aspirar la sala",    freq:"Semanal",   assignee:0, icon:"🧹", weekdays:[6], effort:2},
-      {id:5, name:"Limpiar el baño",    freq:"Semanal",   assignee:0, icon:"🚿", weekdays:[0], effort:3},
-      {id:6, name:"Mercado de la semana",freq:"Semanal",  assignee:1, icon:"🛒", weekdays:[6], effort:3},
-      {id:7, name:"Cambiar las sábanas",freq:"Quincenal", assignee:1, icon:"🛏️", startDate:monAnchor, effort:2},
-      {id:8, name:"Pagar los servicios",freq:"Mensual",   assignee:0, icon:"💡", dayOfMonth:5, effort:1}
+      {id:1, name:"Wash the dishes",     freq:"Daily",    assignee:0, icon:"🍽️", effort:2},
+      {id:2, name:"Water the plants",    freq:"Daily",    assignee:1, icon:"🌱", effort:1},
+      {id:3, name:"Take out the trash",  freq:"Weekly",   assignee:1, icon:"🗑️", weekdays:[1,4], effort:1},
+      {id:4, name:"Vacuum the living room",freq:"Weekly", assignee:0, icon:"🧹", weekdays:[6], effort:2},
+      {id:5, name:"Clean the bathroom",  freq:"Weekly",   assignee:0, icon:"🚿", weekdays:[0], effort:3},
+      {id:6, name:"Weekly groceries",    freq:"Weekly",   assignee:1, icon:"🛒", weekdays:[6], effort:3},
+      {id:7, name:"Change the sheets",   freq:"Biweekly", assignee:1, icon:"🛏️", startDate:monAnchor, effort:2},
+      {id:8, name:"Pay the bills",       freq:"Monthly",  assignee:0, icon:"💡", dayOfMonth:5, effort:1}
     ];
   }
 
@@ -229,6 +230,9 @@
       save();
     }
   }catch(e){}
+
+  // Migrate any old Spanish frequency labels on stored tasks to English.
+  (function(){ var ch=false; S.chores.forEach(function(c){ if(FREQ_MIG[c.freq]){ c.freq=FREQ_MIG[c.freq]; ch=true; } }); if(ch) save(); })();
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
   function save(){ try{
@@ -330,8 +334,8 @@
   function viewToday(){
     var list=choresForDay(TODAY);
     var wrap=h("div",{class:"content"});
-    wrap.appendChild(h("div",{class:"section-title", text:"Hoy · "+DOW_SHORT[TODAY.getDay()]+" "+TODAY.getDate()+" de "+MONTHS[TODAY.getMonth()]}));
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "Sin tareas para hoy")); }
+    wrap.appendChild(h("div",{class:"section-title", text:"Today · "+DOW_SHORT[TODAY.getDay()]+" "+TODAY.getDate()+" "+MONTHS[TODAY.getMonth()]}));
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "No tasks today")); }
     else list.forEach(function(c){ wrap.appendChild(choreCard(c,TODAY)); });
     return wrap;
   }
@@ -359,9 +363,9 @@
     }
     wrap.appendChild(strip);
     var sel=addDays(wk, (S.selectedWeekDay+6)%7);
-    wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[sel.getDay()]+" "+sel.getDate()+" de "+MONTHS[sel.getMonth()]}));
+    wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[sel.getDay()]+" "+sel.getDate()+" "+MONTHS[sel.getMonth()]}));
     var list=choresForDay(sel);
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"☕"}), "Día libre")); }
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"☕"}), "Day off")); }
     else list.forEach(function(c){ wrap.appendChild(choreCard(c,sel)); });
     return wrap;
   }
@@ -370,7 +374,7 @@
     var wrap=h("div",{class:"content"});
     wrap.appendChild(h("div",{class:"section-title", text:MONTHS[TODAY.getMonth()]+" "+TODAY.getFullYear()}));
     var head=h("div",{class:"month-head"});
-    ["L","M","M","J","V","S","D"].forEach(function(d){ head.appendChild(h("div",{text:d})); });
+    ["M","T","W","T","F","S","S"].forEach(function(d){ head.appendChild(h("div",{text:d})); });
     wrap.appendChild(head);
     var first=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
     var lead=(first.getDay()+6)%7; // Monday-based
@@ -404,8 +408,8 @@
         h("span",{style:"width:8px;height:8px;border-radius:50%;background:"+FC[f]}), f));
     });
     wrap.appendChild(leg);
-    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Enviar esta semana al calendario" }));
-    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Crea eventos para los próximos 7 días, sin repetición. Hazlo cada semana para enviar la siguiente." }));
+    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send this week to calendar" }));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Creates events for the next 7 days, no repeats. Do it each week to send the next one." }));
     return wrap;
   }
 
@@ -414,11 +418,11 @@
 
     // ----- Reparto de tareas (fair split by effort points) -----
     var ap=assignedPoints(); var apTot=ap[0]+ap[1]||1;
-    wrap.appendChild(h("div",{class:"section-title", text:"Reparto de tareas"}));
+    wrap.appendChild(h("div",{class:"section-title", text:"Workload split"}));
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
-      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Carga por dificultad (puntos)"),
-      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:shuffleAssignments, text:"🔀 Barajar" })
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)"),
+      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:shuffleAssignments, text:"🔀 Shuffle" })
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
@@ -430,10 +434,10 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"«Barajar» reparte las tareas de forma equilibrada por dificultad. Fija una tarea (📌) para que no se mueva."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” splits the tasks evenly by difficulty. Pin a task (📌) so it stays put."}));
     wrap.appendChild(rep);
 
-    wrap.appendChild(h("div",{class:"section-title", text:"Completado · esta semana"}));
+    wrap.appendChild(h("div",{class:"section-title", text:"Completed · this week"}));
     var wk=startOfWeek(TODAY);
     var counts=[0,0]; var perDay=[];
     for(var i=0;i<7;i++){
@@ -446,8 +450,8 @@
 
     // trophy
     var trophy=h("div",{class:"trophy"});
-    if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("¡Empate! "+counts[0]+" – "+counts[1])); }
-    else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" va ganando")); }
+    if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("Tie! "+counts[0]+" – "+counts[1])); }
+    else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" is ahead")); }
 
     var card=h("div",{class:"vs-card"}, trophy);
     [0,1].forEach(function(p){
@@ -458,13 +462,13 @@
           h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
-        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" pts completados"})
+        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" pts done"})
       ));
     });
     wrap.appendChild(card);
 
     // breakdown
-    wrap.appendChild(h("div",{class:"section-title", text:"Día a día"}));
+    wrap.appendChild(h("div",{class:"section-title", text:"Day by day"}));
     var bdCard=h("div",{class:"vs-card"});
     var bd=h("div",{class:"breakdown"});
     var maxDay=1; perDay.forEach(function(d){ maxDay=Math.max(maxDay,d[0]+d[1]); });
@@ -497,9 +501,9 @@
   function modalAdd(){
     var d=draft;
     function field(label, input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
-    var nameIn=h("input",{type:"text", placeholder:"p. ej. Sacar la basura", value:d.name, onInput:function(e){ d.name=e.target.value; }});
+    var nameIn=h("input",{type:"text", placeholder:"e.g. Take out the trash", value:d.name, onInput:function(e){ d.name=e.target.value; }});
     var freqSeg=h("div",{class:"seg"});
-    ["Diario","Semanal","Quincenal","Mensual"].forEach(function(f){
+    ["Daily","Weekly","Biweekly","Monthly"].forEach(function(f){
       freqSeg.appendChild(h("button",{class:(d.freq===f?"on":""), onClick:function(){ d.freq=f; render(); }, text:f}));
     });
     var diffSeg=h("div",{class:"seg"});
@@ -510,35 +514,35 @@
     [0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:S.names[p]})); });
     var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"#e3e3ee")+";border-radius:11px;background:"+(d.pinned?"#eef0ff":"#fafaff")+";color:"+(d.pinned?"var(--accent2)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
       onClick:function(){ d.pinned=!d.pinned; render(); },
-      text:(d.pinned?"📌 Fijada a "+S.names[d.assignee]+" (no se baraja)":"📌 Fijar a la persona") });
+      text:(d.pinned?"📌 Pinned to "+S.names[d.assignee]+" (won't shuffle)":"📌 Pin to a person") });
 
-    var modalBody=[ field("Nombre", nameIn), field("Frecuencia", freqSeg) ];
-    if(d.freq==="Semanal"){
+    var modalBody=[ field("Name", nameIn), field("Frequency", freqSeg) ];
+    if(d.freq==="Weekly"){
       var dp=h("div",{class:"daypick"});
       DOW_SHORT.forEach(function(lbl,idx){
         var dow=(idx); dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
           onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:lbl}));
       });
-      modalBody.push(field("Días", dp));
+      modalBody.push(field("Days", dp));
     }
-    if(d.freq==="Mensual"){
-      modalBody.push(field("Día del mes", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
+    if(d.freq==="Monthly"){
+      modalBody.push(field("Day of month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
     }
-    modalBody.push(field("Dificultad", diffSeg));
-    modalBody.push(field("Responsable", assignSeg));
-    modalBody.push(field("Fijar", pinBtn));
+    modalBody.push(field("Difficulty", diffSeg));
+    modalBody.push(field("Assigned to", assignSeg));
+    modalBody.push(field("Pin", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
-      h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ editingId=null; S.modal=null; render(); }}),
-      h("button",{class:"btn primary", text:(editingId?"Guardar":"Agregar"), onClick:function(){
+      h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ editingId=null; S.modal=null; render(); }}),
+      h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){
         if(!d.name.trim()) return;
         var target=null;
         if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
         if(!target){ target={ id:Date.now() }; S.chores.push(target); }
         target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=d.icon; target.effort=d.effort; target.pinned=d.pinned;
         delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
-        if(d.freq==="Semanal") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
-        if(d.freq==="Quincenal") target.startDate=d.startDate;
-        if(d.freq==="Mensual") target.dayOfMonth=d.dayOfMonth;
+        if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+        if(d.freq==="Biweekly") target.startDate=d.startDate;
+        if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
         save(); editingId=null; S.modal=null; render();
       }})
     ));
@@ -547,10 +551,10 @@
         onClick:function(){
           for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
           save(); editingId=null; S.modal=null; render();
-        }, text:"Eliminar tarea" }));
+        }, text:"Delete task" }));
     }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ editingId=null; S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:(editingId?"Editar tarea":"Nueva tarea")}), modalBody));
+      h("div",{class:"modal"}, h("h3",{text:(editingId?"Edit task":"New task")}), modalBody));
   }
 
   // ---------- names modal ----------
@@ -561,13 +565,13 @@
     var in0=h("input",{type:"text", value:nameDraft[0], onInput:function(e){ nameDraft[0]=e.target.value; }});
     var in1=h("input",{type:"text", value:nameDraft[1], onInput:function(e){ nameDraft[1]=e.target.value; }});
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Nombres"}),
-        field("Persona 1", in0),
-        field("Persona 2", in1),
+      h("div",{class:"modal"}, h("h3",{text:"Names"}),
+        field("Person 1", in0),
+        field("Person 2", in1),
         h("div",{class:"modal-actions"},
-          h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ S.modal=null; render(); }}),
-          h("button",{class:"btn primary", text:"Guardar", onClick:function(){
-            S.names=[ (nameDraft[0].trim()||"Persona 1"), (nameDraft[1].trim()||"Persona 2") ];
+          h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
+          h("button",{class:"btn primary", text:"Save", onClick:function(){
+            S.names=[ (nameDraft[0].trim()||"Person 1"), (nameDraft[1].trim()||"Person 2") ];
             save(); S.modal=null; render();
           }})
         )
@@ -584,7 +588,7 @@
   function icsEscape(s){ return String(s).replace(/([\\;,])/g,"\\$1").replace(/\n/g,"\\n"); }
   function buildICS(){
     var stamp=icsStampUTC();
-    var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Nuestro Hogar//ES","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Nuestro Hogar"];
+    var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Our Home//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Our Home"];
     // One-off (non-recurring) all-day events for the next 7 days, computed with
     // the app's own isDue() so they match exactly what the app shows. Re-export
     // each week to get the next week — and to reflect the latest «Barajar».
@@ -612,7 +616,7 @@
       a.href=url; a.download="nuestro-hogar.ics";
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
-    }catch(e){ alert("No se pudo exportar el calendario."); }
+    }catch(e){ alert("Couldn't export the calendar."); }
   }
 
   // ---------- all tasks tab ----------
@@ -634,8 +638,8 @@
   function viewTasks(){
     var wrap=h("div",{class:"content"});
     var list=S.chores.filter(function(c){ return S.filterPerson===null || c.assignee===S.filterPerson; });
-    wrap.appendChild(h("div",{class:"section-title", text:"Todas las tareas ("+list.length+")"}));
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Toca + para agregar una tarea")); }
+    wrap.appendChild(h("div",{class:"section-title", text:"All tasks ("+list.length+")"}));
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Tap + to add a task")); }
     else {
       list.slice().sort(function(a,b){ return (a.assignee-b.assignee) || String(a.name).localeCompare(String(b.name)); })
         .forEach(function(c){ wrap.appendChild(taskRow(c)); });
@@ -649,22 +653,22 @@
     var done=todays.filter(function(c){return isDone(c,TODAY);}).length;
     var pct=todays.length? Math.round(done/todays.length*100):0;
     var hd=h("div",{class:"header"},
-      h("div",{class:"title"}, "🏠", h("span",{text:"Nuestro Hogar"})),
+      h("div",{class:"title"}, "🏠", h("span",{text:"Our Home"})),
       h("div",{class:"sub", style:"cursor:pointer", text:S.names[0]+" & "+S.names[1]+"  ✏️", onClick:openNames}),
       h("div",{class:"progress-wrap"},
-        h("div",{class:"progress-top"}, h("span",{text:"Progreso de hoy"}), h("span",{text:done+" de "+todays.length})),
+        h("div",{class:"progress-top"}, h("span",{text:"Today's progress"}), h("span",{text:done+" of "+todays.length})),
         h("div",{class:"progress-bar"}, h("div",{class:"progress-fill", style:"width:"+pct+"%"}))
       )
     );
     var filters=h("div",{class:"filters"});
-    filters.appendChild(h("button",{class:"chip"+(S.filterPerson===null?" active":""), text:"Todos", onClick:function(){ S.filterPerson=null; render(); }}));
+    filters.appendChild(h("button",{class:"chip"+(S.filterPerson===null?" active":""), text:"All", onClick:function(){ S.filterPerson=null; render(); }}));
     [0,1].forEach(function(p){ filters.appendChild(h("button",{class:"chip"+(S.filterPerson===p?" active":""), text:S.names[p], onClick:function(){ S.filterPerson=(S.filterPerson===p?null:p); render(); }})); });
     hd.appendChild(filters);
     return hd;
   }
 
   function nav(){
-    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["tasks","📋","Tareas"],["logros","🏆","Logros"]];
+    var tabs=[["today","🏠","Today"],["week","📅","Week"],["month","🗓️","Month"],["tasks","📋","Tasks"],["logros","🏆","Stats"]];
     var n=h("div",{class:"nav"});
     tabs.forEach(function(t){
       n.appendChild(h("button",{class:(S.tab===t[0]?"active":""), onClick:function(){ S.tab=t[0]; render(); }},
