@@ -171,6 +171,8 @@
   // Difficulty / effort: the weight used to split the workload fairly.
   var DIFF = { 1:{label:"Light",color:"#43A047"}, 2:{label:"Medium",color:"#FB8C00"}, 3:{label:"Heavy",color:"#E53935"} };
   function effortOf(c){ return c.effort||2; }
+  function pColor(a){ return a==null ? "#9e9e9e" : PC[a].c; }   // null = unassigned (gray)
+  function pName(a){ return a==null ? "Unassigned" : S.names[a]; }
   var FREQ_MIG = { "Diario":"Daily", "Semanal":"Weekly", "Quincenal":"Biweekly", "Mensual":"Monthly" };
   var DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -273,7 +275,7 @@
   // Total assigned effort points per person (the fairness measure).
   function assignedPoints(){
     var t=[0,0];
-    S.chores.forEach(function(c){ t[c.assignee]+=effortOf(c); });
+    S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
     return t;
   }
   // Re-deal the non-pinned tasks so both people end up with as equal a TOTAL
@@ -281,7 +283,7 @@
   // shuffle, then give each task to whoever currently has the lighter load.
   function shuffleAssignments(){
     var totals=[0,0];
-    S.chores.forEach(function(c){ if(c.pinned){ totals[c.assignee]+=effortOf(c); } });
+    S.chores.forEach(function(c){ if(c.pinned && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
     var pool=S.chores.filter(function(c){ return !c.pinned; });
     for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
     pool.forEach(function(c){
@@ -314,7 +316,6 @@
   // ---------- components ----------
   function choreCard(ch, date){
     var done=isDone(ch,date);
-    var pc=PC[ch.assignee];
     var eff=effortOf(ch);
     return h("div",{class:"card"+(done?" done":"")},
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
@@ -324,8 +325,8 @@
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pc.c, text:S.names[ch.assignee],
-            onClick:function(){ ch.assignee=ch.assignee===0?1:0; save(); render(); }})
+          h("span",{class:"tag person", style:"background:"+pColor(ch.assignee), text:pName(ch.assignee),
+            onClick:function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
         )
       )
     );
@@ -442,7 +443,7 @@
     var counts=[0,0]; var perDay=[];
     for(var i=0;i<7;i++){
       var day=addDays(wk,i); var dc=[0,0];
-      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; counts[who]+=effortOf(c); dc[who]+=effortOf(c); } });
+      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; if(who===0||who===1){ counts[who]+=effortOf(c); dc[who]+=effortOf(c); } } });
       perDay.push(dc);
     }
     var total=counts[0]+counts[1];
@@ -488,7 +489,7 @@
   var draft; var editingId=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Diario", assignee:0, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
     S.modal="add"; render();
   }
   function openEdit(c){
@@ -511,7 +512,7 @@
       style:(d.effort===e?"border-color:"+DIFF[e].color+";color:"+DIFF[e].color+";background:#fff":""),
       onClick:function(){ d.effort=e; render(); }, text:DIFF[e].label})); });
     var assignSeg=h("div",{class:"seg"});
-    [0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:S.names[p]})); });
+    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null) d.pinned=false; render(); }, text:(p==null?"Nobody":S.names[p])})); });
     var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"#e3e3ee")+";border-radius:11px;background:"+(d.pinned?"#eef0ff":"#fafaff")+";color:"+(d.pinned?"var(--accent2)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
       onClick:function(){ d.pinned=!d.pinned; render(); },
       text:(d.pinned?"📌 Pinned to "+S.names[d.assignee]+" (won't shuffle)":"📌 Pin to a person") });
@@ -530,7 +531,7 @@
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
-    modalBody.push(field("Pin", pinBtn));
+    if(d.assignee!=null) modalBody.push(field("Pin", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
       h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ editingId=null; S.modal=null; render(); }}),
       h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){
@@ -621,7 +622,7 @@
 
   // ---------- all tasks tab ----------
   function taskRow(c){
-    var pc=PC[c.assignee]; var eff=effortOf(c);
+    var eff=effortOf(c);
     return h("div",{class:"card", style:"cursor:pointer", onClick:function(){ openEdit(c); }},
       h("div",{class:"card-icon", text:c.icon}),
       h("div",{class:"card-main"},
@@ -629,7 +630,7 @@
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pc.c, text:S.names[c.assignee]})
+          h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
         )
       ),
       h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
