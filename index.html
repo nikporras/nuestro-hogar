@@ -394,7 +394,7 @@
       var pct = total? Math.round(counts[p]/total*100) : 0;
       card.appendChild(h("div",{class:"vs-row"},
         h("div",{class:"vs-top"},
-          h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;background:"+PC[p].c;display:"+"inline-block"}), S.names[p]),
+          h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
           h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
