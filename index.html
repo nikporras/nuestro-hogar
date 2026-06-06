@@ -377,6 +377,8 @@
         h("span",{style:"width:8px;height:8px;border-radius:50%;background:"+FC[f]}), f));
     });
     wrap.appendChild(leg);
+    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Exportar al calendario" }));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Impórtalo en el calendario de tu teléfono para recibir recordatorios." }));
     return wrap;
   }
 
@@ -493,6 +495,58 @@
           }})
         )
       ));
+  }
+
+  // ---------- calendar (.ics) export ----------
+  // Generates recurring calendar events so the phone's own calendar fires the
+  // reminders. No network, no backend — just a downloaded file the user imports.
+  function p2(n){ return (n<10?"0":"")+n; }
+  function icsLocal(d){ return d.getFullYear()+p2(d.getMonth()+1)+p2(d.getDate())+"T"+p2(d.getHours())+p2(d.getMinutes())+"00"; }
+  function icsStampUTC(){ var d=new Date(); return d.getUTCFullYear()+p2(d.getUTCMonth()+1)+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+p2(d.getUTCMinutes())+p2(d.getUTCSeconds())+"Z"; }
+  function icsEscape(s){ return String(s).replace(/([\\;,])/g,"\\$1").replace(/\n/g,"\\n"); }
+  function firstWeekdayOnOrAfter(date, weekdays){
+    var d=new Date(date); d.setHours(8,0,0,0);
+    for(var i=0;i<7;i++){ if(weekdays.indexOf(d.getDay())>=0) return d; d.setDate(d.getDate()+1); }
+    return d;
+  }
+  function buildICS(){
+    var BYDAY=["SU","MO","TU","WE","TH","FR","SA"];
+    var stamp=icsStampUTC();
+    var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Nuestro Hogar//ES","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Nuestro Hogar"];
+    S.chores.forEach(function(c){
+      var base=new Date(TODAY); base.setHours(8,0,0,0);
+      var dt, rrule;
+      if(c.freq==="Diario"){ dt=base; rrule="FREQ=DAILY"; }
+      else if(c.freq==="Semanal"){
+        var wds=(c.weekdays&&c.weekdays.length)?c.weekdays:[base.getDay()];
+        dt=firstWeekdayOnOrAfter(base, wds);
+        rrule="FREQ=WEEKLY;BYDAY="+wds.map(function(w){return BYDAY[w];}).join(",");
+      }
+      else if(c.freq==="Quincenal"){ var s=new Date(c.startDate); s.setHours(8,0,0,0); dt=s; rrule="FREQ=WEEKLY;INTERVAL=2"; }
+      else if(c.freq==="Mensual"){
+        var dom=c.dayOfMonth||1;
+        var m=new Date(TODAY.getFullYear(),TODAY.getMonth(),dom,8,0,0,0);
+        if(m<base){ m=new Date(TODAY.getFullYear(),TODAY.getMonth()+1,dom,8,0,0,0); }
+        dt=m; rrule="FREQ=MONTHLY;BYMONTHDAY="+dom;
+      }
+      else { return; }
+      var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+S.names[c.assignee]);
+      L.push("BEGIN:VEVENT","UID:nh-"+c.id+"@nuestro-hogar","DTSTAMP:"+stamp,"DTSTART:"+icsLocal(dt),
+        "DURATION:PT30M","RRULE:"+rrule,"SUMMARY:"+summary,
+        "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:-PT0M","END:VALARM","END:VEVENT");
+    });
+    L.push("END:VCALENDAR");
+    return L.join("\r\n");
+  }
+  function exportICS(){
+    try{
+      var blob=new Blob([buildICS()], {type:"text/calendar;charset=utf-8"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url; a.download="nuestro-hogar.ics";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+    }catch(e){ alert("No se pudo exportar el calendario."); }
   }
 
   // ---------- header / nav / render ----------
