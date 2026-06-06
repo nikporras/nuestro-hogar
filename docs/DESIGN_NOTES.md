@@ -11,19 +11,20 @@ The original design had overlapping concepts ("Hoy" vs "Semana" views, plus a
 `freq` label *and* a `days[]` schedule that could contradict each other). We
 collapse this to a single, non-redundant model:
 
-**Tabs:** `Hoy` · `Semana` · `Mes` · `IA`
+**Tabs:** `Hoy` · `Semana` · `Mes` · `Logros` · `IA`
 
 - `Hoy`, `Semana`, `Mes` are **the same data at three zoom levels** (day → week →
   month), not independent feature sets.
-- The old **`Historial`** tab is **removed**; the month view subsumes the
-  "overview" role. (The who-did-more comparison can live inside `Mes` if we still
-  want it — open question, see below.)
+- The old **`Historial`** tab's *month-overview* role is subsumed by `Mes`. Its
+  other role — the two-person **"who completed more" comparison** — moves to its
+  own dedicated tab, **`Logros`** (working name; the trophy/ranking view).
 
 | Tab | Shows |
 |-----|-------|
 | Hoy | Tasks due **today**. |
 | Semana | The current week, day-by-day; which tasks fall on each day. |
 | Mes | The current month overview; which tasks fall on each day / this month. |
+| Logros | Two-person comparison from `doneLog`: % completed per person, trophy / tie badge, day-by-day breakdown. (Pure local data, no scheduling logic.) |
 | IA | Natural-language management (Phase 2, behind the proxy). |
 
 A daily task naturally appears in all three views; a monthly task appears in
@@ -61,13 +62,15 @@ This fixes the latent bug in the original doc: `days[]` (weekday-only) **cannot*
 express `Quincenal`/`Mensual`, so those frequencies need a date anchor. With this
 model they schedule correctly instead of silently behaving like weekly tasks.
 
-### Open question
-- Keep the two-person "who completed more" comparison? If yes, it folds into the
-  `Mes` view (no separate history tab). If not, drop it entirely.
+### Resolved
+- The two-person "who completed more" comparison is **kept**, in its own
+  dedicated `Logros` tab (decided 2026-06-06). It reads from `doneLog` and
+  contains no scheduling logic, so it does not affect the `isDue` model.
 
 ---
 
 ## Impact on the threat model
-No new trust boundaries. `isDue` is pure/local; the three core tabs still make
+No new trust boundaries. `isDue` is pure/local, and `Logros` reads only local
+`doneLog` data — the four core tabs (`Hoy`, `Semana`, `Mes`, `Logros`) still make
 **zero** external calls (Phase 1 stays secret-free). Only `IA` crosses the proxy
 boundary in Phase 2.
