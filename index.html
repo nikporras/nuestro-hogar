@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#667eea" />
+<!-- Phase 1: fully self-contained, no external calls, no secrets. CSP locks everything to 'self'. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; base-uri 'none'; form-action 'none'" />
+<title>Nuestro Hogar</title>
+<style>
+  :root{
+    --accent1:#667eea; --accent2:#764ba2;
+    --p1:#2196F3; --p1bg:#e8f4fd;
+    --p2:#E91E63; --p2bg:#fce4ec;
+    --diario:#FF6B35; --semanal:#4CAF50; --quincenal:#9C27B0; --mensual:#FF9800;
+    --done:#4CAF50; --bg:#f8f7ff; --surface:#ffffff;
+    --shadow:0 2px 12px rgba(102,126,234,0.12);
+    --text:#2b2b3a; --muted:#8a8a9a;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text);
+    max-width:480px; margin:0 auto; min-height:100vh;
+    padding-bottom:78px;
+  }
+  /* Header */
+  .header{
+    background:linear-gradient(135deg,var(--accent1),var(--accent2));
+    color:#fff; padding:18px 20px 20px; border-radius:0 0 22px 22px;
+    box-shadow:0 4px 18px rgba(118,75,162,0.25);
+  }
+  .header .title{display:flex;align-items:center;gap:9px;font-size:21px;font-weight:700;}
+  .header .sub{font-size:12.5px;opacity:.85;margin-top:2px;}
+  .progress-wrap{margin-top:15px;}
+  .progress-top{display:flex;justify-content:space-between;font-size:12.5px;opacity:.95;margin-bottom:6px;}
+  .progress-bar{height:9px;background:rgba(255,255,255,.28);border-radius:20px;overflow:hidden;}
+  .progress-fill{height:100%;background:#fff;border-radius:20px;transition:width .4s ease;}
+  .filters{display:flex;gap:8px;margin-top:14px;}
+  .chip{
+    border:none;font:inherit;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;
+    background:rgba(255,255,255,.18);color:#fff;cursor:pointer;backdrop-filter:blur(4px);
+  }
+  .chip.active{background:#fff;color:var(--accent2);}
+
+  /* Content */
+  .content{padding:16px 14px 8px;}
+  .section-title{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:6px 4px 10px;}
+
+  /* Chore card */
+  .card{
+    background:var(--surface);border-radius:16px;padding:13px 14px;margin-bottom:10px;
+    box-shadow:var(--shadow);display:flex;align-items:center;gap:13px;
+    transition:transform .12s ease, opacity .2s ease;
+  }
+  .card.done{opacity:.62;}
+  .check{
+    width:30px;height:30px;border-radius:50%;border:2.5px solid #d9d9e6;flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:#fff;
+    transition:all .15s ease;background:transparent;
+  }
+  .check.on{border-color:var(--done);background:var(--done);}
+  .card-icon{font-size:23px;width:30px;text-align:center;flex-shrink:0;}
+  .card-main{flex:1;min-width:0;}
+  .card-name{font-size:15px;font-weight:600;}
+  .card.done .card-name{text-decoration:line-through;color:var(--muted);}
+  .card-tags{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;}
+  .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;color:#fff;}
+  .tag.person{cursor:pointer;}
+
+  /* Week strip */
+  .week-strip{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;margin-bottom:6px;}
+  .day-pill{
+    flex:1;min-width:44px;background:var(--surface);border-radius:14px;padding:9px 4px;text-align:center;
+    cursor:pointer;box-shadow:var(--shadow);border:2px solid transparent;
+  }
+  .day-pill.active{border-color:var(--accent1);}
+  .day-pill.future{opacity:.45;}
+  .day-pill .dow{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;}
+  .day-pill .num{font-size:17px;font-weight:700;margin-top:2px;}
+  .day-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--accent1);margin:4px auto 0;}
+  .day-pill .dot.empty{background:transparent;}
+  .today-ring{outline:2px solid var(--accent2);outline-offset:1px;}
+
+  /* Month grid */
+  .month-head{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px;}
+  .month-head div{text-align:center;font-size:10.5px;font-weight:700;color:var(--muted);}
+  .month-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+  .mcell{
+    aspect-ratio:1/1;background:var(--surface);border-radius:10px;box-shadow:var(--shadow);
+    padding:4px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;position:relative;
+  }
+  .mcell.out{opacity:.32;box-shadow:none;background:transparent;}
+  .mcell .d{font-size:11.5px;font-weight:700;}
+  .mcell.today .d{background:var(--accent2);color:#fff;border-radius:50%;width:19px;height:19px;display:flex;align-items:center;justify-content:center;}
+  .mcell .dots{display:flex;gap:2px;flex-wrap:wrap;justify-content:center;margin-top:3px;}
+  .mcell .mdot{width:5px;height:5px;border-radius:50%;}
+
+  /* Logros */
+  .vs-card{background:var(--surface);border-radius:18px;padding:18px;box-shadow:var(--shadow);margin-bottom:14px;}
+  .vs-row{margin-bottom:16px;}
+  .vs-row:last-child{margin-bottom:0;}
+  .vs-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;}
+  .vs-name{font-weight:700;font-size:15px;display:flex;align-items:center;gap:7px;}
+  .vs-pct{font-weight:800;font-size:16px;}
+  .vs-bar{height:13px;border-radius:20px;background:#eee;overflow:hidden;}
+  .vs-fill{height:100%;border-radius:20px;transition:width .5s ease;}
+  .trophy{text-align:center;font-size:14px;font-weight:700;margin-bottom:14px;}
+  .trophy .big{font-size:38px;display:block;margin-bottom:4px;}
+  .breakdown{display:flex;justify-content:space-between;gap:5px;margin-top:6px;}
+  .bd-day{flex:1;text-align:center;}
+  .bd-day .lbl{font-size:10px;color:var(--muted);font-weight:700;margin-bottom:5px;}
+  .bd-bar{height:54px;background:#f0f0f6;border-radius:7px;display:flex;flex-direction:column-reverse;overflow:hidden;}
+  .bd-seg{width:100%;}
+
+  /* IA placeholder */
+  .ia-wrap{text-align:center;padding:50px 24px;}
+  .ia-wrap .big{font-size:46px;}
+  .ia-wrap h3{margin:14px 0 6px;font-size:18px;}
+  .ia-wrap p{color:var(--muted);font-size:13.5px;line-height:1.5;}
+  .ia-badge{display:inline-block;margin-top:16px;background:#fff3e0;color:#e65100;font-size:12px;font-weight:700;padding:6px 14px;border-radius:20px;}
+
+  .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:14px;}
+  .empty .big{font-size:40px;display:block;margin-bottom:10px;}
+
+  /* FAB */
+  .fab{
+    position:fixed;right:calc(50% - 240px + 18px);bottom:90px;width:54px;height:54px;border-radius:50%;
+    background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;border:none;font-size:28px;
+    box-shadow:0 6px 18px rgba(118,75,162,.45);cursor:pointer;z-index:20;line-height:1;
+  }
+  @media(max-width:480px){.fab{right:18px;}}
+
+  /* Bottom nav */
+  .nav{
+    position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;
+    background:#fff;display:flex;justify-content:space-around;padding:8px 4px 10px;
+    box-shadow:0 -2px 14px rgba(102,126,234,.12);z-index:15;
+  }
+  .nav button{
+    border:none;background:none;font:inherit;color:var(--muted);font-size:10.5px;font-weight:600;
+    display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:2px 8px;flex:1;
+  }
+  .nav button .ic{font-size:20px;}
+  .nav button.active{color:var(--accent2);}
+
+  /* Modal */
+  .overlay{position:fixed;inset:0;background:rgba(40,30,60,.45);display:flex;align-items:flex-end;justify-content:center;z-index:40;}
+  .modal{background:#fff;width:100%;max-width:480px;border-radius:22px 22px 0 0;padding:20px 18px 26px;}
+  .modal h3{margin:0 0 16px;font-size:18px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;}
+  .field input, .field select{width:100%;padding:11px 12px;border:1.5px solid #e3e3ee;border-radius:11px;font:inherit;font-size:15px;background:#fafaff;}
+  .daypick{display:flex;gap:5px;}
+  .daypick button{flex:1;padding:8px 0;border:1.5px solid #e3e3ee;border-radius:9px;background:#fafaff;font:inherit;font-size:12px;font-weight:700;cursor:pointer;color:var(--muted);}
+  .daypick button.on{background:var(--accent1);color:#fff;border-color:var(--accent1);}
+  .seg{display:flex;gap:8px;}
+  .seg button{flex:1;padding:11px;border:1.5px solid #e3e3ee;border-radius:11px;background:#fafaff;font:inherit;font-weight:700;cursor:pointer;}
+  .seg button.on{border-color:var(--accent1);background:#eef0ff;color:var(--accent2);}
+  .modal-actions{display:flex;gap:10px;margin-top:8px;}
+  .btn{flex:1;padding:13px;border:none;border-radius:12px;font:inherit;font-weight:700;font-size:15px;cursor:pointer;}
+  .btn.primary{background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;}
+  .btn.ghost{background:#f0f0f6;color:var(--muted);}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+  "use strict";
+
+  // ---------- constants ----------
+  var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
+  var FC = { "Diario":"#FF6B35", "Semanal":"#4CAF50", "Quincenal":"#9C27B0", "Mensual":"#FF9800" };
+  var DOW_SHORT = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+  var MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+
+  // ---------- date helpers ----------
+  function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+  function addDays(d,n){ var x=new Date(d); x.setDate(x.getDate()+n); return x; }
+  function sameDay(a,b){ return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate(); }
+  function startOfWeek(d){ var x=new Date(d); var dow=x.getDay(); x.setDate(x.getDate()-((dow+6)%7)); x.setHours(0,0,0,0); return x; } // Monday
+  function daysBetween(a,b){ return Math.round((b-a)/86400000); }
+
+  // ---------- single source of truth for scheduling ----------
+  // The ONLY function that decides whether a chore shows on a given date.
+  function isDue(ch, date){
+    switch(ch.freq){
+      case "Diario":    return true;
+      case "Semanal":   return (ch.weekdays||[]).indexOf(date.getDay())>=0;
+      case "Quincenal": { var anchor=new Date(ch.startDate); anchor.setHours(0,0,0,0);
+                          var d2=new Date(date); d2.setHours(0,0,0,0);
+                          var diff=daysBetween(anchor,d2); return diff>=0 && diff%14===0; }
+      case "Mensual":   return date.getDate()===ch.dayOfMonth;
+      default: return false;
+    }
+  }
+
+  // ---------- seed / state ----------
+  var TODAY = new Date(); TODAY.setHours(0,0,0,0);
+  function defaultChores(){
+    var monAnchor = ymd(startOfWeek(TODAY)); // a Monday for the quincenal anchor
+    return [
+      {id:1, name:"Lavar los platos",   freq:"Diario",    assignee:0, icon:"🍽️"},
+      {id:2, name:"Regar las plantas",  freq:"Diario",    assignee:1, icon:"🌱"},
+      {id:3, name:"Sacar la basura",    freq:"Semanal",   assignee:1, icon:"🗑️", weekdays:[1,4]},
+      {id:4, name:"Aspirar la sala",    freq:"Semanal",   assignee:0, icon:"🧹", weekdays:[6]},
+      {id:5, name:"Limpiar el baño",    freq:"Semanal",   assignee:0, icon:"🚿", weekdays:[0]},
+      {id:6, name:"Mercado de la semana",freq:"Semanal",  assignee:1, icon:"🛒", weekdays:[6]},
+      {id:7, name:"Cambiar las sábanas",freq:"Quincenal", assignee:1, icon:"🛏️", startDate:monAnchor},
+      {id:8, name:"Pagar los servicios",freq:"Mensual",   assignee:0, icon:"💡", dayOfMonth:5}
+    ];
+  }
+
+  var S = {
+    chores: load("nh_chores", defaultChores()),
+    names:  load("nh_names", ["Nico","Sam"]),
+    doneLog:load("nh_doneLog", seedDoneLog()),
+    tab: "today",
+    selectedWeekDay: TODAY.getDay(),
+    filterPerson: null,
+    modal: null
+  };
+
+  function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
+  function save(){ try{
+    localStorage.setItem("nh_chores",JSON.stringify(S.chores));
+    localStorage.setItem("nh_names",JSON.stringify(S.names));
+    localStorage.setItem("nh_doneLog",JSON.stringify(S.doneLog));
+  }catch(e){} }
+
+  // Seed a realistic-looking history for the current week so Logros/Mes look alive.
+  function seedDoneLog(){
+    var log={}; var ch=defaultChores(); var wk=startOfWeek(TODAY);
+    for(var i=0;i<7;i++){
+      var day=addDays(wk,i); if(day>TODAY) break;
+      ch.forEach(function(c){
+        if(isDue(c,day) && Math.random()>0.35){ log[c.id+"_"+ymd(day)] = c.assignee; }
+      });
+    }
+    return log;
+  }
+
+  // ---------- done helpers ----------
+  function isDone(ch,date){ return Object.prototype.hasOwnProperty.call(S.doneLog, ch.id+"_"+ymd(date)); }
+  function toggleDone(ch,date){
+    var key=ch.id+"_"+ymd(date);
+    if(Object.prototype.hasOwnProperty.call(S.doneLog,key)) delete S.doneLog[key];
+    else S.doneLog[key]=ch.assignee;
+    save(); render();
+  }
+  function choresForDay(date){
+    return S.chores.filter(function(c){
+      if(!isDue(c,date)) return false;
+      if(S.filterPerson!==null && c.assignee!==S.filterPerson) return false;
+      return true;
+    });
+  }
+
+  // ---------- tiny DOM helper ----------
+  function h(tag, attrs){
+    var el=document.createElement(tag);
+    attrs=attrs||{};
+    for(var k in attrs){
+      if(k==="class") el.className=attrs[k];
+      else if(k==="text") el.textContent=attrs[k];
+      else if(k==="html") el.innerHTML=attrs[k];
+      else if(k.slice(0,2)==="on") el.addEventListener(k.slice(2).toLowerCase(),attrs[k]);
+      else if(k==="style") el.setAttribute("style",attrs[k]);
+      else el.setAttribute(k,attrs[k]);
+    }
+    for(var i=2;i<arguments.length;i++){
+      var c=arguments[i]; if(c==null) continue;
+      if(Array.isArray(c)) c.forEach(function(x){ if(x!=null) el.appendChild(typeof x==="string"?document.createTextNode(x):x); });
+      else el.appendChild(typeof c==="string"?document.createTextNode(c):c);
+    }
+    return el;
+  }
+
+  // ---------- components ----------
+  function choreCard(ch, date){
+    var done=isDone(ch,date);
+    var pc=PC[ch.assignee];
+    return h("div",{class:"card"+(done?" done":"")},
+      h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
+      h("div",{class:"card-icon", text:ch.icon}),
+      h("div",{class:"card-main"},
+        h("div",{class:"card-name", text:ch.name}),
+        h("div",{class:"card-tags"},
+          h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
+          h("span",{class:"tag person", style:"background:"+pc.c, text:S.names[ch.assignee],
+            onClick:function(){ ch.assignee=ch.assignee===0?1:0; save(); render(); }})
+        )
+      )
+    );
+  }
+
+  function viewToday(){
+    var list=choresForDay(TODAY);
+    var wrap=h("div",{class:"content"});
+    wrap.appendChild(h("div",{class:"section-title", text:"Hoy · "+DOW_SHORT[TODAY.getDay()]+" "+TODAY.getDate()+" de "+MONTHS[TODAY.getMonth()]}));
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "Sin tareas para hoy")); }
+    else list.forEach(function(c){ wrap.appendChild(choreCard(c,TODAY)); });
+    return wrap;
+  }
+
+  function viewWeek(){
+    var wrap=h("div",{class:"content"});
+    var wk=startOfWeek(TODAY);
+    var strip=h("div",{class:"week-strip"});
+    for(var i=0;i<7;i++){
+      (function(i){
+        var day=addDays(wk,i);
+        var dow=day.getDay();
+        var future=day>TODAY;
+        var due=choresForDay(day);
+        var doneCount=due.filter(function(c){return isDone(c,day);}).length;
+        var pill=h("div",{class:"day-pill"+(dow===S.selectedWeekDay?" active":"")+(future?" future":"")+(sameDay(day,TODAY)?" today-ring":""),
+          onClick:function(){ S.selectedWeekDay=dow; render(); }},
+          h("div",{class:"dow",text:DOW_SHORT[dow]}),
+          h("div",{class:"num",text:String(day.getDate())}),
+          h("div",{class:"dot"+(due.length?"":" empty")})
+        );
+        if(due.length){ pill.appendChild(h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:3px;",text:doneCount+"/"+due.length})); }
+        strip.appendChild(pill);
+      })(i);
+    }
+    wrap.appendChild(strip);
+    var sel=addDays(wk, (S.selectedWeekDay+6)%7);
+    wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[sel.getDay()]+" "+sel.getDate()+" de "+MONTHS[sel.getMonth()]}));
+    var list=choresForDay(sel);
+    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"☕"}), "Día libre")); }
+    else list.forEach(function(c){ wrap.appendChild(choreCard(c,sel)); });
+    return wrap;
+  }
+
+  function viewMonth(){
+    var wrap=h("div",{class:"content"});
+    wrap.appendChild(h("div",{class:"section-title", text:MONTHS[TODAY.getMonth()]+" "+TODAY.getFullYear()}));
+    var head=h("div",{class:"month-head"});
+    ["L","M","M","J","V","S","D"].forEach(function(d){ head.appendChild(h("div",{text:d})); });
+    wrap.appendChild(head);
+    var first=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
+    var lead=(first.getDay()+6)%7; // Monday-based
+    var grid=h("div",{class:"month-grid"});
+    var start=addDays(first,-lead);
+    for(var i=0;i<42;i++){
+      (function(i){
+        var day=addDays(start,i);
+        var out=day.getMonth()!==TODAY.getMonth();
+        var cell=h("div",{class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")},
+          h("div",{class:"d",text:String(day.getDate())}));
+        if(!out){
+          var due=S.chores.filter(function(c){return isDue(c,day);});
+          if(due.length){
+            var dots=h("div",{class:"dots"});
+            due.slice(0,4).forEach(function(c){
+              var done=isDone(c,day);
+              dots.appendChild(h("div",{class:"mdot", style:"background:"+(done?"#cfcfda":FC[c.freq])}));
+            });
+            cell.appendChild(dots);
+          }
+        }
+        grid.appendChild(cell);
+      })(i);
+    }
+    wrap.appendChild(grid);
+    // legend
+    var leg=h("div",{style:"display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:14px;"});
+    Object.keys(FC).forEach(function(f){
+      leg.appendChild(h("div",{style:"display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);font-weight:600;"},
+        h("span",{style:"width:8px;height:8px;border-radius:50%;background:"+FC[f]}), f));
+    });
+    wrap.appendChild(leg);
+    return wrap;
+  }
+
+  function viewLogros(){
+    var wrap=h("div",{class:"content"});
+    wrap.appendChild(h("div",{class:"section-title", text:"Logros · esta semana"}));
+    var wk=startOfWeek(TODAY);
+    var counts=[0,0]; var perDay=[];
+    for(var i=0;i<7;i++){
+      var day=addDays(wk,i); var dc=[0,0];
+      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; counts[who]++; dc[who]++; } });
+      perDay.push(dc);
+    }
+    var total=counts[0]+counts[1];
+    var leader = counts[0]===counts[1] ? -1 : (counts[0]>counts[1]?0:1);
+
+    // trophy
+    var trophy=h("div",{class:"trophy"});
+    if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("¡Empate! "+counts[0]+" – "+counts[1])); }
+    else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" va ganando")); }
+
+    var card=h("div",{class:"vs-card"}, trophy);
+    [0,1].forEach(function(p){
+      var pct = total? Math.round(counts[p]/total*100) : 0;
+      card.appendChild(h("div",{class:"vs-row"},
+        h("div",{class:"vs-top"},
+          h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;background:"+PC[p].c;display:"+"inline-block"}), S.names[p]),
+          h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
+        ),
+        h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
+        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" tareas completadas"})
+      ));
+    });
+    wrap.appendChild(card);
+
+    // breakdown
+    wrap.appendChild(h("div",{class:"section-title", text:"Día a día"}));
+    var bdCard=h("div",{class:"vs-card"});
+    var bd=h("div",{class:"breakdown"});
+    var maxDay=1; perDay.forEach(function(d){ maxDay=Math.max(maxDay,d[0]+d[1]); });
+    perDay.forEach(function(d,i){
+      var col=h("div",{class:"bd-day"}, h("div",{class:"lbl",text:DOW_SHORT[(i+1)%7]}));
+      var bar=h("div",{class:"bd-bar"});
+      [0,1].forEach(function(p){ if(d[p]>0){ bar.appendChild(h("div",{class:"bd-seg", style:"height:"+(d[p]/maxDay*100)+"%;background:"+PC[p].c})); } });
+      col.appendChild(bar);
+      bd.appendChild(col);
+    });
+    bdCard.appendChild(bd);
+    wrap.appendChild(bdCard);
+    return wrap;
+  }
+
+  function viewIA(){
+    return h("div",{class:"content"},
+      h("div",{class:"ia-wrap"},
+        h("span",{class:"big",text:"✨"}),
+        h("h3",{text:"Asistente con IA"}),
+        h("p",{text:"Pronto podrás gestionar tareas y alarmas escribiendo en lenguaje natural: «agrega sacar la basura los lunes y jueves»."}),
+        h("div",{class:"ia-badge",text:"Fase 2 · detrás del proxy seguro"})
+      )
+    );
+  }
+
+  // ---------- add chore modal ----------
+  var draft;
+  function openAdd(){
+    draft={ name:"", freq:"Diario", assignee:0, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)) };
+    S.modal="add"; render();
+  }
+  function modalAdd(){
+    var d=draft;
+    function field(label, input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
+    var nameIn=h("input",{type:"text", placeholder:"p. ej. Sacar la basura", value:d.name, onInput:function(e){ d.name=e.target.value; }});
+    var freqSeg=h("div",{class:"seg"});
+    ["Diario","Semanal","Quincenal","Mensual"].forEach(function(f){
+      freqSeg.appendChild(h("button",{class:(d.freq===f?"on":""), onClick:function(){ d.freq=f; render(); }, text:f}));
+    });
+    var assignSeg=h("div",{class:"seg"});
+    [0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:S.names[p]})); });
+
+    var modalBody=[ field("Nombre", nameIn), field("Frecuencia", freqSeg) ];
+    if(d.freq==="Semanal"){
+      var dp=h("div",{class:"daypick"});
+      DOW_SHORT.forEach(function(lbl,idx){
+        var dow=(idx); dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
+          onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:lbl}));
+      });
+      modalBody.push(field("Días", dp));
+    }
+    if(d.freq==="Mensual"){
+      modalBody.push(field("Día del mes", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
+    }
+    modalBody.push(field("Responsable", assignSeg));
+    modalBody.push(h("div",{class:"modal-actions"},
+      h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ S.modal=null; render(); }}),
+      h("button",{class:"btn primary", text:"Agregar", onClick:function(){
+        if(!d.name.trim()) return;
+        var ch={ id:Date.now(), name:d.name.trim(), freq:d.freq, assignee:d.assignee, icon:d.icon };
+        if(d.freq==="Semanal") ch.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+        if(d.freq==="Quincenal") ch.startDate=d.startDate;
+        if(d.freq==="Mensual") ch.dayOfMonth=d.dayOfMonth;
+        S.chores.push(ch); save(); S.modal=null; render();
+      }})
+    ));
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
+      h("div",{class:"modal"}, h("h3",{text:"Nueva tarea"}), modalBody));
+  }
+
+  // ---------- header / nav / render ----------
+  function header(){
+    var todays=choresForDay(TODAY);
+    var done=todays.filter(function(c){return isDone(c,TODAY);}).length;
+    var pct=todays.length? Math.round(done/todays.length*100):0;
+    var hd=h("div",{class:"header"},
+      h("div",{class:"title"}, "🏠", h("span",{text:"Nuestro Hogar"})),
+      h("div",{class:"sub", text:S.names[0]+" & "+S.names[1]}),
+      h("div",{class:"progress-wrap"},
+        h("div",{class:"progress-top"}, h("span",{text:"Progreso de hoy"}), h("span",{text:done+" de "+todays.length})),
+        h("div",{class:"progress-bar"}, h("div",{class:"progress-fill", style:"width:"+pct+"%"}))
+      )
+    );
+    var filters=h("div",{class:"filters"});
+    filters.appendChild(h("button",{class:"chip"+(S.filterPerson===null?" active":""), text:"Todos", onClick:function(){ S.filterPerson=null; render(); }}));
+    [0,1].forEach(function(p){ filters.appendChild(h("button",{class:"chip"+(S.filterPerson===p?" active":""), text:S.names[p], onClick:function(){ S.filterPerson=(S.filterPerson===p?null:p); render(); }})); });
+    hd.appendChild(filters);
+    return hd;
+  }
+
+  function nav(){
+    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["logros","🏆","Logros"],["ia","✨","IA"]];
+    var n=h("div",{class:"nav"});
+    tabs.forEach(function(t){
+      n.appendChild(h("button",{class:(S.tab===t[0]?"active":""), onClick:function(){ S.tab=t[0]; render(); }},
+        h("span",{class:"ic",text:t[1]}), t[2]));
+    });
+    return n;
+  }
+
+  function render(){
+    var root=document.getElementById("root");
+    root.innerHTML="";
+    root.appendChild(header());
+    var body;
+    if(S.tab==="today") body=viewToday();
+    else if(S.tab==="week") body=viewWeek();
+    else if(S.tab==="month") body=viewMonth();
+    else if(S.tab==="logros") body=viewLogros();
+    else body=viewIA();
+    root.appendChild(body);
+    if(S.tab==="today"||S.tab==="week"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
+    root.appendChild(nav());
+    if(S.modal==="add") root.appendChild(modalAdd());
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
