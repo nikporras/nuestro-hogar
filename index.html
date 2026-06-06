@@ -187,7 +187,7 @@
     switch(ch.freq){
       case "Diario":    return true;
       case "Semanal":   return (ch.weekdays||[]).indexOf(date.getDay())>=0;
-      case "Quincenal": { var anchor=new Date(ch.startDate); anchor.setHours(0,0,0,0);
+      case "Quincenal": { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
                           var d2=new Date(date); d2.setHours(0,0,0,0);
                           var diff=daysBetween(anchor,d2); return diff>=0 && diff%14===0; }
       case "Mensual":   return date.getDate()===ch.dayOfMonth;
@@ -404,8 +404,8 @@
         h("span",{style:"width:8px;height:8px;border-radius:50%;background:"+FC[f]}), f));
     });
     wrap.appendChild(leg);
-    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Exportar al calendario" }));
-    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Impórtalo en el calendario de tu teléfono para recibir recordatorios." }));
+    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Enviar esta semana al calendario" }));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Crea eventos para los próximos 7 días, sin repetición. Hazlo cada semana para enviar la siguiente." }));
     return wrap;
   }
 
@@ -582,38 +582,25 @@
   function icsNextDay(d){ var x=new Date(d); x.setDate(x.getDate()+1); return x; }
   function icsStampUTC(){ var d=new Date(); return d.getUTCFullYear()+p2(d.getUTCMonth()+1)+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+p2(d.getUTCMinutes())+p2(d.getUTCSeconds())+"Z"; }
   function icsEscape(s){ return String(s).replace(/([\\;,])/g,"\\$1").replace(/\n/g,"\\n"); }
-  function firstWeekdayOnOrAfter(date, weekdays){
-    var d=new Date(date); d.setHours(8,0,0,0);
-    for(var i=0;i<7;i++){ if(weekdays.indexOf(d.getDay())>=0) return d; d.setDate(d.getDate()+1); }
-    return d;
-  }
   function buildICS(){
-    var BYDAY=["SU","MO","TU","WE","TH","FR","SA"];
     var stamp=icsStampUTC();
     var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Nuestro Hogar//ES","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Nuestro Hogar"];
-    S.chores.forEach(function(c){
-      var base=new Date(TODAY); base.setHours(8,0,0,0);
-      var dt, rrule;
-      if(c.freq==="Diario"){ dt=base; rrule="FREQ=DAILY"; }
-      else if(c.freq==="Semanal"){
-        var wds=(c.weekdays&&c.weekdays.length)?c.weekdays:[base.getDay()];
-        dt=firstWeekdayOnOrAfter(base, wds);
-        rrule="FREQ=WEEKLY;BYDAY="+wds.map(function(w){return BYDAY[w];}).join(",");
-      }
-      else if(c.freq==="Quincenal"){ var sp=String(c.startDate).split("-"); dt=new Date(+sp[0],(+sp[1])-1,+sp[2]); rrule="FREQ=WEEKLY;INTERVAL=2"; }
-      else if(c.freq==="Mensual"){
-        var dom=c.dayOfMonth||1;
-        var m=new Date(TODAY.getFullYear(),TODAY.getMonth(),dom,8,0,0,0);
-        if(m<base){ m=new Date(TODAY.getFullYear(),TODAY.getMonth()+1,dom,8,0,0,0); }
-        dt=m; rrule="FREQ=MONTHLY;BYMONTHDAY="+dom;
-      }
-      else { return; }
-      var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+S.names[c.assignee]);
-      L.push("BEGIN:VEVENT","UID:nh-"+c.id+"@nuestro-hogar","DTSTAMP:"+stamp,
-        "DTSTART;VALUE=DATE:"+icsDate(dt),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(dt)),
-        "RRULE:"+rrule,"SUMMARY:"+summary,
-        "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:PT9H","END:VALARM","END:VEVENT");
-    });
+    // One-off (non-recurring) all-day events for the next 7 days, computed with
+    // the app's own isDue() so they match exactly what the app shows. Re-export
+    // each week to get the next week — and to reflect the latest «Barajar».
+    for(var off=0; off<7; off++){
+      var day=addDays(TODAY, off);
+      S.chores.forEach(function(c){
+        if(!isDue(c, day)) return;
+        var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+S.names[c.assignee]);
+        L.push("BEGIN:VEVENT",
+          "UID:nh-"+c.id+"-"+icsDate(day)+"@nuestro-hogar","DTSTAMP:"+stamp,
+          "DTSTART;VALUE=DATE:"+icsDate(day),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(day)),
+          "SUMMARY:"+summary,
+          "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:PT9H","END:VALARM",
+          "END:VEVENT");
+      });
+    }
     L.push("END:VCALENDAR");
     return L.join("\r\n");
   }
