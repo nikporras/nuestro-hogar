@@ -173,6 +173,38 @@
   function effortOf(c){ return c.effort||2; }
   function pColor(a){ return a==null ? "#9e9e9e" : PC[a].c; }   // null = unassigned (gray)
   function pName(a){ return a==null ? "Unassigned" : S.names[a]; }
+  // Infer an emoji from keywords in the task name (used when none is set).
+  function guessIcon(name){
+    var n=String(name||"").toLowerCase();
+    var map=[
+      [["dish","plate","wash up","cutlery"],"🍽️"],
+      [["cook","dinner","lunch","breakfast","meal","kitchen"],"🍳"],
+      [["trash","garbage","rubbish","bin","recycl"],"🗑️"],
+      [["laundry","clothes","washing","iron","fold","towel"],"🧺"],
+      [["vacuum","hoover","sweep","broom","dust"],"🧹"],
+      [["mop","floor"],"🧽"],
+      [["toilet"],"🚽"],
+      [["bath","shower","sink"],"🚿"],
+      [["bed","sheet","linen","pillow"],"🛏️"],
+      [["plant","garden","flower"],"🌱"],
+      [["lawn","mow","yard","rake","leaves","grass"],"🌿"],
+      [["dog","puppy","walk"],"🐶"],
+      [["cat","litter"],"🐱"],
+      [["fish","pet","bird"],"🐾"],
+      [["grocer","shopping","market","supermarket"," buy","shop"],"🛒"],
+      [["bill","rent"," pay","utilit","invoice"],"💡"],
+      [["window"],"🪟"],
+      [["car","vehicle"],"🚗"],
+      [["fridge","refrigerator","freezer"],"🧊"],
+      [["mail","post","package","parcel"],"📬"],
+      [["medicine","pill","meds","pharmac"],"💊"],
+      [["baby","kid","child"],"👶"],
+      [["homework","school","study"],"📚"],
+      [["clean","tidy","wipe"],"🧽"]
+    ];
+    for(var i=0;i<map.length;i++){ for(var j=0;j<map[i][0].length;j++){ if(n.indexOf(map[i][0][j])>=0) return map[i][1]; } }
+    return "🧽";
+  }
   var FREQ_MIG = { "Diario":"Daily", "Semanal":"Weekly", "Quincenal":"Biweekly", "Mensual":"Monthly" };
   var DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -489,7 +521,7 @@
   var draft; var editingId=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
     S.modal="add"; render();
   }
   function openEdit(c){
@@ -503,6 +535,7 @@
     var d=draft;
     function field(label, input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
     var nameIn=h("input",{type:"text", placeholder:"e.g. Take out the trash", value:d.name, onInput:function(e){ d.name=e.target.value; }});
+    var emojiIn=h("input",{type:"text", maxlength:"8", value:d.icon||"", placeholder:guessIcon(d.name)+" (auto from name)", style:"text-align:center;", onInput:function(e){ d.icon=e.target.value; }});
     var freqSeg=h("div",{class:"seg"});
     ["Daily","Weekly","Biweekly","Monthly"].forEach(function(f){
       freqSeg.appendChild(h("button",{class:(d.freq===f?"on":""), onClick:function(){ d.freq=f; render(); }, text:f}));
@@ -517,7 +550,7 @@
       onClick:function(){ d.pinned=!d.pinned; render(); },
       text:(d.pinned?"📌 Pinned to "+S.names[d.assignee]+" (won't shuffle)":"📌 Pin to a person") });
 
-    var modalBody=[ field("Name", nameIn), field("Frequency", freqSeg) ];
+    var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn), field("Frequency", freqSeg) ];
     if(d.freq==="Weekly"){
       var dp=h("div",{class:"daypick"});
       DOW_SHORT.forEach(function(lbl,idx){
@@ -539,7 +572,8 @@
         var target=null;
         if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
         if(!target){ target={ id:Date.now() }; S.chores.push(target); }
-        target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=d.icon; target.effort=d.effort; target.pinned=d.pinned;
+        var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
+        target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
         delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
         if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
         if(d.freq==="Biweekly") target.startDate=d.startDate;
