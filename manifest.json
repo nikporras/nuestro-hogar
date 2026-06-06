@@ -1,7 +1,7 @@
 {
   "name": "Nuestro Hogar",
   "short_name": "Hogar",
-  "description": "Gestión de tareas del hogar para dos personas, con IA integrada.",
+  "description": "Gestión de tareas del hogar para dos personas. Funciona sin conexión.",
   "lang": "es",
   "dir": "ltr",
   "start_url": "./index.html",

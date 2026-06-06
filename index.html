@@ -116,13 +116,6 @@
   .bd-bar{height:54px;background:#f0f0f6;border-radius:7px;display:flex;flex-direction:column-reverse;overflow:hidden;}
   .bd-seg{width:100%;}
 
-  /* IA placeholder */
-  .ia-wrap{text-align:center;padding:50px 24px;}
-  .ia-wrap .big{font-size:46px;}
-  .ia-wrap h3{margin:14px 0 6px;font-size:18px;}
-  .ia-wrap p{color:var(--muted);font-size:13.5px;line-height:1.5;}
-  .ia-badge{display:inline-block;margin-top:16px;background:#fff3e0;color:#e65100;font-size:12px;font-weight:700;padding:6px 14px;border-radius:20px;}
-
   .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:14px;}
   .empty .big{font-size:40px;display:block;margin-bottom:10px;}
 
@@ -427,17 +420,6 @@
     return wrap;
   }
 
-  function viewIA(){
-    return h("div",{class:"content"},
-      h("div",{class:"ia-wrap"},
-        h("span",{class:"big",text:"✨"}),
-        h("h3",{text:"Asistente con IA"}),
-        h("p",{text:"Pronto podrás gestionar tareas y alarmas escribiendo en lenguaje natural: «agrega sacar la basura los lunes y jueves»."}),
-        h("div",{class:"ia-badge",text:"Fase 2 · detrás del proxy seguro"})
-      )
-    );
-  }
-
   // ---------- add chore modal ----------
   var draft;
   function openAdd(){
@@ -504,7 +486,7 @@
   }
 
   function nav(){
-    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["logros","🏆","Logros"],["ia","✨","IA"]];
+    var tabs=[["today","🏠","Hoy"],["week","📅","Semana"],["month","🗓️","Mes"],["logros","🏆","Logros"]];
     var n=h("div",{class:"nav"});
     tabs.forEach(function(t){
       n.appendChild(h("button",{class:(S.tab===t[0]?"active":""), onClick:function(){ S.tab=t[0]; render(); }},
@@ -521,8 +503,7 @@
     if(S.tab==="today") body=viewToday();
     else if(S.tab==="week") body=viewWeek();
     else if(S.tab==="month") body=viewMonth();
-    else if(S.tab==="logros") body=viewLogros();
-    else body=viewIA();
+    else body=viewLogros();
     root.appendChild(body);
     if(S.tab==="today"||S.tab==="week"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
     root.appendChild(nav());

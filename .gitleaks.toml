@@ -1,15 +1,6 @@
 # gitleaks configuration for Nuestro Hogar.
-# Extends the default ruleset; only adds an allowlist for the documented
-# placeholder in the env template (it is not a real credential).
+# The app uses no secrets; this scanner runs purely as repo hygiene so a
+# credential can never be committed by accident. Default ruleset, no allowlist.
 
 [extend]
 useDefault = true
-
-[allowlist]
-description = "Ignore documented placeholders"
-paths = [
-  '''\.env\.example$''',
-]
-regexes = [
-  '''sk-ant-REPLACE_ME''',
-]

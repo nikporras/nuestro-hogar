@@ -1,21 +1,10 @@
 # 🏠 Nuestro Hogar
 
-A two-person household-chore PWA (installable on Android/iOS, works offline),
-with an optional AI assistant. Built security-first: the core app ships **zero
-secrets** and makes **zero external calls**.
+A two-person household-chore PWA — installable on Android/iOS, works offline.
+Built security-first: it ships **zero secrets**, makes **zero network requests**,
+and **nothing ever leaves your device**.
 
-## Status
-
-| Phase | Scope | State |
-|-------|-------|-------|
-| **Phase 1** | Static, secret-free app: `Hoy` · `Semana` · `Mes` · `Logros` + installable PWA | ✅ Done |
-| **Phase 2** | `IA` tab via a serverless proxy that holds the Anthropic key | ⏳ Planned |
-
-The `IA` tab is currently a placeholder — see [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
-for why the AI feature requires a backend proxy and cannot ship the key in the
-browser.
-
-## Features (Phase 1)
+## Features
 
 - **Hoy / Semana / Mes** — the same schedule at three zoom levels (day → week →
   month). A single `isDue(chore, date)` function drives all three, so a chore's
@@ -24,8 +13,14 @@ browser.
   🏆/🤝 badge, and a day-by-day breakdown.
 - **Frequencies** — Diario, Semanal (per-weekday), Quincenal (every 2 weeks from
   an anchor date), Mensual (a day of the month).
+- **Add / reassign chores** — a quick modal form; tap a person tag to reassign,
+  tap the circle to mark done.
 - **Offline-first PWA** — installable, works with no connection, data stored in
   `localStorage` on the device.
+
+> There is no AI / cloud feature by design. See `docs/DESIGN_NOTES.md` → D3 for
+> the rationale (it would have meant a backend, a secret, and sending your data
+> to a third party — not worth it for a two-person chore list).
 
 ## Run locally
 
@@ -64,5 +59,5 @@ node scripts/generate-icons.js   # writes icons/icon-192.png and icon-512.png
 ## Security
 
 See [`SECURITY.md`](SECURITY.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
-Highlights: no secret ever lives in client code, the AI tab will sit behind a
-rate-limited proxy, and CI scans every push for leaked secrets.
+Highlights: no secrets anywhere, CSP locked to `default-src 'none'` (no network),
+all data on-device, and CI scans every push for accidentally-committed secrets.

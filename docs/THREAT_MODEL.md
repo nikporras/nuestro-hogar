@@ -1,25 +1,27 @@
 # Threat Model — Nuestro Hogar
 
-> Status: **Draft / pre-implementation**
+> Status: **Current**
 > Last updated: 2026-06-06
 > Owner: Nicolás
-> Method: STRIDE + data-flow analysis, scoped to the deployed PWA (not the Claude artifact sandbox).
+> Method: STRIDE + data-flow analysis.
 
-This document is written **before** feature code so the architecture is shaped
-by it, rather than retrofitted. It is a living document — update it whenever a
-new data flow, dependency, or trust boundary is introduced.
+> **Scope decision (2026-06-06):** the AI feature was **dropped** (see
+> `docs/DESIGN_NOTES.md` → D3). The app is now a **fully static, offline PWA with
+> no backend, no secrets, and no external calls.** This removes the entire class
+> of risk that previously dominated this document (a client-exposed API key, a
+> proxy to host, third-party data sharing). What remains is a small client-side
+> surface.
 
 ---
 
-## 1. Scope & purpose
+## 1. What the app is now
 
-"Nuestro Hogar" is a two-person household-chore PWA with an optional AI tab that
-talks to the Anthropic API. The app is intended for **GitHub Pages** (static
-hosting) and stores data in **localStorage**.
+A two-person household-chore PWA served as static files (GitHub Pages). All data
+lives in the browser's `localStorage`. The app makes **zero network requests** at
+runtime — its Content-Security-Policy is `default-src 'none'`, so nothing can be
+fetched or exfiltrated even if a bug tried to.
 
-The original design doc assumes the browser calls the Anthropic API directly,
-with auth "handled by the Claude artifact." **That assumption does not hold
-outside the artifact sandbox** and is the origin of this model's top risk.
+There is **no API key, no server, no proxy, and no third party** in the picture.
 
 ---
 
@@ -27,13 +29,12 @@ outside the artifact sandbox** and is the origin of this model's top risk.
 
 | # | Asset | Sensitivity | Why it matters |
 |---|-------|-------------|----------------|
-| A1 | **Anthropic API key** | **Critical** | A leaked key allows unauthorized spend and account abuse under the owner's identity. |
-| A2 | AI proxy availability / quota | High | An open or unthrottled proxy can be drained, causing cost + denial of service. |
-| A3 | Deployment pipeline & repo secrets | High | CI/CD compromise = arbitrary code shipped to users. |
-| A4 | User task data + names (`chores`, `names`, `doneLog`, `alarms`) | Low–Medium | Personal but low-stakes; privacy matters, financial/identity impact is minimal. |
-| A5 | Client integrity (served JS/HTML/SW) | High | Tampering here undermines every other control. |
+| A1 | Client integrity (the served HTML/JS/SW) | High | Tampering here is the only way to subvert a static app. |
+| A2 | Deployment pipeline & repo | High | CI/CD or repo compromise = altered code shipped to the device. |
+| A3 | User task data + names (`chores`, `names`, `doneLog`, `alarms`) | Low | Personal but low-stakes; stays on-device, never transmitted. |
 
-The **API key (A1) is the crown jewel.** Most controls below exist to protect it.
+There is no high-value secret asset anymore — that's the whole point of dropping
+the AI.
 
 ---
 
@@ -41,50 +42,52 @@ The **API key (A1) is the crown jewel.** Most controls below exist to protect it
 
 ```
 [ User device / browser ]
-   |  (1) static assets over HTTPS
+   |  (1) static assets over HTTPS, once
    v
-[ GitHub Pages (static, NO secrets) ]  --- trust boundary ---
-   |  (2) AI request (user text + app state)
-   v
-[ Proxy: serverless function ]  <-- holds API key (A1)
-   |  (3) server-to-server, key attached
-   v
-[ Anthropic API ]
+[ GitHub Pages (static, NO secrets) ]
 ```
 
-Key boundaries:
-- **B1 — Browser ↔ static host:** anything served here is public; it can hold **no** secret.
-- **B2 — Browser ↔ proxy:** the only place client input crosses into trusted code. Validate, authenticate-by-origin, and rate-limit here.
-- **B3 — App ↔ AI output:** the model's JSON response is **untrusted input** to the app. `applyActions` sits on this boundary.
-- **B4 — localStorage:** readable by any JS on the origin; only as safe as our XSS posture.
+That's the entire diagram. After load, the app runs entirely on-device:
+
+- **B1 — Browser ↔ static host:** public assets; holds no secret. HTTPS-only (Pages-provided).
+- **B2 — localStorage:** readable by any JS on the origin; only as safe as our XSS posture.
+
+There is no app↔AI boundary and no browser↔proxy boundary — both were deleted
+with the AI feature.
 
 ---
 
 ## 4. STRIDE analysis
 
 ### Spoofing
-- **S1** — Forged requests to the proxy impersonating the app.
-  *Mitigation:* strict CORS allow-list (own origin only), optional shared app token; never rely on CORS alone for authz.
+- Not applicable in a meaningful way — there is no auth, no server, and no
+  identity to spoof. The app is single-device and local.
 
 ### Tampering
-- **T1** — Modified client assets (MITM, compromised CDN). *Mitigation:* HTTPS (Pages-provided), **SRI hashes** + pinned versions on all CDN `<script>`/`<link>`.
-- **T2** — Malicious AI action mutating state unexpectedly (e.g. `delete` by *partial name* nuking the wrong chore). *Mitigation:* strict schema validation + exact-id/confirmation before destructive actions (see §5, B3).
-- **T3** — Service Worker cache poisoning. *Mitigation:* versioned cache, tight SW scope, never cache proxy/API responses, validate push payloads.
+- **T1** — Modified client assets (MITM, compromised CDN). *Mitigation:* HTTPS;
+  the app has **no third-party CDN** (zero-dependency, self-contained `index.html`),
+  so there is no external script to tamper with or to need SRI for.
+- **T2** — Service Worker cache poisoning. *Mitigation:* versioned cache, tight
+  scope, same-origin GETs only (see `sw.js`).
 
 ### Repudiation
-- **R1** — No audit trail of AI-driven changes. *Low priority* for a 2-person app; consider a local change log if disputes arise.
+- Not applicable — single-user-device app, no shared server state, no audit need.
 
 ### Information disclosure
-- **I1 — API key exposure (the headline risk).** Direct browser→Anthropic calls require shipping the key client-side → trivially extractable. *Mitigation:* **never** put the key in client code; move all AI calls behind the proxy (A1/B2).
-- **I2** — Secret leaked via commit. *Mitigation:* `.gitignore` for `.env`, gitleaks pre-commit + CI, no keys in repo ever.
-- **I3** — Privacy: task data + names are sent to Anthropic when the AI tab is used. *Mitigation:* disclose in `SECURITY.md`/privacy note; keep the 3 core tabs fully functional with **no** external calls.
+- **I1** — Privacy. **Nothing leaves the device.** With no AI and CSP
+  `default-src 'none'`, there is no network path for data to escape. localStorage
+  data is unencrypted on-device (accepted — see §6).
 
 ### Denial of service
-- **D1** — Proxy/key drained by abuse or runaway client. *Mitigation:* per-IP rate limiting, daily spend/request cap, server-enforced `max_tokens` and model (client cannot override), request-size limits.
+- Not applicable — no server or quota to exhaust; the app is local.
 
 ### Elevation of privilege
-- **E1 — XSS** via user-entered task names or AI `message` text rendered unsafely (esp. the vanilla-JS `index.html` build). *Mitigation:* output-encode everything; no `innerHTML`/`dangerouslySetInnerHTML` for dynamic content; **CSP** with locked `connect-src`/`script-src`.
-- **E2** — Prompt injection steering the model into unwanted actions. *Mitigation:* sanitize user text entering the system prompt; constrain effects to the six known action types; schema-gate all actions before applying.
+- **E1 — XSS** via user-entered task names rendered unsafely. *Mitigation:* the
+  app builds the DOM with `textContent` / typed element creation (no
+  `innerHTML`/`dangerouslySetInnerHTML` for dynamic content), and **CSP
+  `default-src 'none'`** means even a successful injection has nowhere to send
+  data and no external script to load. This is the one residual surface worth
+  staying disciplined about.
 
 ---
 
@@ -92,28 +95,21 @@ Key boundaries:
 
 | Priority | Control | Addresses |
 |----------|---------|-----------|
-| P0 | No secret in client; **serverless proxy** holds the key | I1, A1 |
-| P0 | Proxy: CORS allow-list + rate limit + spend cap + server-set model/max_tokens | S1, D1, A2 |
-| P0 | Secret hygiene: `.gitignore` `.env`, gitleaks pre-commit + CI | I2 |
-| P1 | Strict schema validation of AI actions; no partial-match deletes without confirm | T2, E2, B3 |
-| P1 | **CSP** + output encoding; no raw HTML injection | E1 |
-| P1 | **SRI** + pinned CDN versions | T1 |
-| P2 | Service Worker: scoped, versioned cache, no caching of AI responses | T3 |
-| P2 | Privacy disclosure for AI-tab data sharing | I3 |
+| P1 | **CSP `default-src 'none'`** — no network, no external scripts | I1, E1 |
+| P1 | Output encoding / no raw HTML injection for dynamic content | E1 |
+| P1 | Service Worker: scoped, versioned cache, same-origin GET only | T2 |
+| P2 | HTTPS delivery (GitHub Pages default) | T1 |
+| P2 | Secret-scanning in CI + pre-commit (general hygiene) | A2 |
+
+Secret-scanning is kept as cheap, general repo hygiene — not because the app has
+a secret, but because it's good insurance against one ever being committed by
+accident.
 
 ---
 
-## 6. Build-order implication
+## 6. Residual risks / accepted
 
-Because only the **AI tab** touches a secret, the safe sequencing is:
-
-1. **Phase 1 — static, secret-free frontend** (Hoy / Semana / Historial). Zero external calls, fully offline-capable, shippable to Pages immediately. Risk surface: E1, T1, T3, B4 only.
-2. **Phase 2 — AI tab + proxy**, with P0/P1 controls built in from the first commit, never bolted on.
-
----
-
-## 7. Residual risks / accepted
-
-- localStorage data is unencrypted on-device — **accepted** given Low–Medium sensitivity (A4) and no multi-tenant boundary.
-- No user authentication on a public Pages URL — **accepted** because data is device-local; revisit if any server-side persistence is added.
-- Reliance on a third-party CDN for React — mitigated by SRI but not eliminated; revisit if self-hosting becomes feasible.
+- **localStorage is unencrypted on-device** — accepted, given Low sensitivity (A3)
+  and a single-user-device model.
+- **No user authentication on a public Pages URL** — accepted, because the URL
+  serves only static code; all *data* is device-local and never uploaded.

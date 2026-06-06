@@ -11,29 +11,25 @@ filing a public issue. Expect a best-effort response.
 A full analysis lives in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). The
 short version:
 
-- **The Anthropic API key is the most sensitive asset.** It is **never** shipped
-  in client-side code. All AI requests go through a server-side proxy that holds
-  the key as an environment secret. Static hosting (GitHub Pages) holds **no**
-  secrets.
-- **The three core tabs (Hoy / Semana / Historial) make no external calls.** They
-  work fully offline. Only the **✨ IA** tab sends data off-device.
-- **AI output is treated as untrusted.** Every action returned by the model is
-  validated against a strict schema before it is applied to app state.
-- **Client hardening:** Content-Security-Policy, output encoding (no raw HTML
-  injection), and Subresource Integrity (SRI) with pinned versions for any CDN
-  dependency.
+- **The app is fully static and offline.** It is served as static files from
+  GitHub Pages and makes **zero network requests** at runtime — its
+  Content-Security-Policy is `default-src 'none'`.
+- **No secrets, no server, no third parties.** There is no API key, no backend
+  proxy, and no external service. (The AI feature that would have required these
+  was deliberately dropped — see `docs/DESIGN_NOTES.md` → D3.)
+- **All data stays on your device** in the browser's `localStorage`.
+- **Client hardening:** strict CSP, output encoding (no raw HTML injection), and
+  a zero-dependency self-contained app (no third-party CDN scripts to trust).
 
 ## Privacy notice
 
-When you use the **✨ IA** tab, the text you type **and your current task/alarm
-state** (chore names, the two configured names, schedules) are sent to the
-Anthropic API to generate a response. The three core tabs do not transmit any
-data — everything stays in your browser's `localStorage`.
-
-If you do not use the AI tab, no personal data ever leaves your device.
+**Nothing you enter ever leaves your device.** Chore names, the two configured
+names, schedules, and completion history are stored only in your browser's
+`localStorage`. The app makes no network calls, so there is no server — ours or
+anyone else's — that receives your data.
 
 ## Secrets
 
-- API keys and other secrets live only in environment variables / the proxy's
-  secret store, never in the repository.
-- `.env` files are git-ignored, and commits are scanned for leaked secrets.
+The app needs none. As general hygiene, the repository still runs secret
+scanning (gitleaks) in CI and as a local pre-commit hook, so no credential can be
+committed by accident even though the app doesn't use one.
