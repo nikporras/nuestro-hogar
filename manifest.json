@@ -1,8 +1,8 @@
 {
-  "name": "Nuestro Hogar",
-  "short_name": "Hogar",
-  "description": "Gestión de tareas del hogar para dos personas. Funciona sin conexión.",
-  "lang": "es",
+  "name": "Our Home",
+  "short_name": "Home",
+  "description": "Household chores for two people. Works offline.",
+  "lang": "en",
   "dir": "ltr",
   "start_url": "./index.html",
   "scope": "./",
