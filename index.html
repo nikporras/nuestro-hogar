@@ -168,6 +168,9 @@
   // ---------- constants ----------
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Diario":"#FF6B35", "Semanal":"#4CAF50", "Quincenal":"#9C27B0", "Mensual":"#FF9800" };
+  // Difficulty / effort: the weight used to split the workload fairly.
+  var DIFF = { 1:{label:"Ligera",color:"#43A047"}, 2:{label:"Media",color:"#FB8C00"}, 3:{label:"Pesada",color:"#E53935"} };
+  function effortOf(c){ return c.effort||2; }
   var DOW_SHORT = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
   var MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
@@ -197,14 +200,14 @@
   function defaultChores(){
     var monAnchor = ymd(startOfWeek(TODAY)); // a Monday for the quincenal anchor
     return [
-      {id:1, name:"Lavar los platos",   freq:"Diario",    assignee:0, icon:"🍽️"},
-      {id:2, name:"Regar las plantas",  freq:"Diario",    assignee:1, icon:"🌱"},
-      {id:3, name:"Sacar la basura",    freq:"Semanal",   assignee:1, icon:"🗑️", weekdays:[1,4]},
-      {id:4, name:"Aspirar la sala",    freq:"Semanal",   assignee:0, icon:"🧹", weekdays:[6]},
-      {id:5, name:"Limpiar el baño",    freq:"Semanal",   assignee:0, icon:"🚿", weekdays:[0]},
-      {id:6, name:"Mercado de la semana",freq:"Semanal",  assignee:1, icon:"🛒", weekdays:[6]},
-      {id:7, name:"Cambiar las sábanas",freq:"Quincenal", assignee:1, icon:"🛏️", startDate:monAnchor},
-      {id:8, name:"Pagar los servicios",freq:"Mensual",   assignee:0, icon:"💡", dayOfMonth:5}
+      {id:1, name:"Lavar los platos",   freq:"Diario",    assignee:0, icon:"🍽️", effort:2},
+      {id:2, name:"Regar las plantas",  freq:"Diario",    assignee:1, icon:"🌱", effort:1},
+      {id:3, name:"Sacar la basura",    freq:"Semanal",   assignee:1, icon:"🗑️", weekdays:[1,4], effort:1},
+      {id:4, name:"Aspirar la sala",    freq:"Semanal",   assignee:0, icon:"🧹", weekdays:[6], effort:2},
+      {id:5, name:"Limpiar el baño",    freq:"Semanal",   assignee:0, icon:"🚿", weekdays:[0], effort:3},
+      {id:6, name:"Mercado de la semana",freq:"Semanal",  assignee:1, icon:"🛒", weekdays:[6], effort:3},
+      {id:7, name:"Cambiar las sábanas",freq:"Quincenal", assignee:1, icon:"🛏️", startDate:monAnchor, effort:2},
+      {id:8, name:"Pagar los servicios",freq:"Mensual",   assignee:0, icon:"💡", dayOfMonth:5, effort:1}
     ];
   }
 
@@ -262,6 +265,28 @@
     });
   }
 
+  // ---------- fair workload split ----------
+  // Total assigned effort points per person (the fairness measure).
+  function assignedPoints(){
+    var t=[0,0];
+    S.chores.forEach(function(c){ t[c.assignee]+=effortOf(c); });
+    return t;
+  }
+  // Re-deal the non-pinned tasks so both people end up with as equal a TOTAL
+  // EFFORT as possible. Randomized (so it varies week to week) but balanced:
+  // shuffle, then give each task to whoever currently has the lighter load.
+  function shuffleAssignments(){
+    var totals=[0,0];
+    S.chores.forEach(function(c){ if(c.pinned){ totals[c.assignee]+=effortOf(c); } });
+    var pool=S.chores.filter(function(c){ return !c.pinned; });
+    for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
+    pool.forEach(function(c){
+      var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
+      c.assignee=who; totals[who]+=effortOf(c);
+    });
+    save(); render();
+  }
+
   // ---------- tiny DOM helper ----------
   function h(tag, attrs){
     var el=document.createElement(tag);
@@ -286,13 +311,15 @@
   function choreCard(ch, date){
     var done=isDone(ch,date);
     var pc=PC[ch.assignee];
+    var eff=effortOf(ch);
     return h("div",{class:"card"+(done?" done":"")},
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
-      h("div",{class:"card-icon", text:ch.icon}),
+      h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", text:ch.name}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"📌 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
+          h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
           h("span",{class:"tag person", style:"background:"+pc.c, text:S.names[ch.assignee],
             onClick:function(){ ch.assignee=ch.assignee===0?1:0; save(); render(); }})
         )
@@ -384,12 +411,34 @@
 
   function viewLogros(){
     var wrap=h("div",{class:"content"});
-    wrap.appendChild(h("div",{class:"section-title", text:"Logros · esta semana"}));
+
+    // ----- Reparto de tareas (fair split by effort points) -----
+    var ap=assignedPoints(); var apTot=ap[0]+ap[1]||1;
+    wrap.appendChild(h("div",{class:"section-title", text:"Reparto de tareas"}));
+    var rep=h("div",{class:"vs-card"});
+    rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Carga por dificultad (puntos)"),
+      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:shuffleAssignments, text:"🔀 Barajar" })
+    ));
+    [0,1].forEach(function(p){
+      var pct=Math.round(ap[p]/apTot*100);
+      rep.appendChild(h("div",{class:"vs-row"},
+        h("div",{class:"vs-top"},
+          h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
+          h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:ap[p]+" pt"})
+        ),
+        h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
+      ));
+    });
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"«Barajar» reparte las tareas de forma equilibrada por dificultad. Fija una tarea (📌) para que no se mueva."}));
+    wrap.appendChild(rep);
+
+    wrap.appendChild(h("div",{class:"section-title", text:"Completado · esta semana"}));
     var wk=startOfWeek(TODAY);
     var counts=[0,0]; var perDay=[];
     for(var i=0;i<7;i++){
       var day=addDays(wk,i); var dc=[0,0];
-      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; counts[who]++; dc[who]++; } });
+      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; counts[who]+=effortOf(c); dc[who]+=effortOf(c); } });
       perDay.push(dc);
     }
     var total=counts[0]+counts[1];
@@ -409,7 +458,7 @@
           h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
-        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" tareas completadas"})
+        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" pts completados"})
       ));
     });
     wrap.appendChild(card);
@@ -431,10 +480,18 @@
     return wrap;
   }
 
-  // ---------- add chore modal ----------
-  var draft;
+  // ---------- add / edit chore modal ----------
+  var draft; var editingId=null;
   function openAdd(){
-    draft={ name:"", freq:"Diario", assignee:0, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)) };
+    editingId=null;
+    draft={ name:"", freq:"Diario", assignee:0, icon:"🧽", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
+    S.modal="add"; render();
+  }
+  function openEdit(c){
+    editingId=c.id;
+    draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
+      weekdays:(c.weekdays?c.weekdays.slice():[]), dayOfMonth:c.dayOfMonth||1,
+      startDate:c.startDate||ymd(startOfWeek(TODAY)), effort:effortOf(c), pinned:!!c.pinned };
     S.modal="add"; render();
   }
   function modalAdd(){
@@ -445,8 +502,15 @@
     ["Diario","Semanal","Quincenal","Mensual"].forEach(function(f){
       freqSeg.appendChild(h("button",{class:(d.freq===f?"on":""), onClick:function(){ d.freq=f; render(); }, text:f}));
     });
+    var diffSeg=h("div",{class:"seg"});
+    [1,2,3].forEach(function(e){ diffSeg.appendChild(h("button",{class:(d.effort===e?"on":""),
+      style:(d.effort===e?"border-color:"+DIFF[e].color+";color:"+DIFF[e].color+";background:#fff":""),
+      onClick:function(){ d.effort=e; render(); }, text:DIFF[e].label})); });
     var assignSeg=h("div",{class:"seg"});
     [0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:S.names[p]})); });
+    var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"#e3e3ee")+";border-radius:11px;background:"+(d.pinned?"#eef0ff":"#fafaff")+";color:"+(d.pinned?"var(--accent2)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
+      onClick:function(){ d.pinned=!d.pinned; render(); },
+      text:(d.pinned?"📌 Fijada a "+S.names[d.assignee]+" (no se baraja)":"📌 Fijar a la persona") });
 
     var modalBody=[ field("Nombre", nameIn), field("Frecuencia", freqSeg) ];
     if(d.freq==="Semanal"){
@@ -460,20 +524,33 @@
     if(d.freq==="Mensual"){
       modalBody.push(field("Día del mes", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
     }
+    modalBody.push(field("Dificultad", diffSeg));
     modalBody.push(field("Responsable", assignSeg));
+    modalBody.push(field("Fijar", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
-      h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ S.modal=null; render(); }}),
-      h("button",{class:"btn primary", text:"Agregar", onClick:function(){
+      h("button",{class:"btn ghost", text:"Cancelar", onClick:function(){ editingId=null; S.modal=null; render(); }}),
+      h("button",{class:"btn primary", text:(editingId?"Guardar":"Agregar"), onClick:function(){
         if(!d.name.trim()) return;
-        var ch={ id:Date.now(), name:d.name.trim(), freq:d.freq, assignee:d.assignee, icon:d.icon };
-        if(d.freq==="Semanal") ch.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
-        if(d.freq==="Quincenal") ch.startDate=d.startDate;
-        if(d.freq==="Mensual") ch.dayOfMonth=d.dayOfMonth;
-        S.chores.push(ch); save(); S.modal=null; render();
+        var target=null;
+        if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
+        if(!target){ target={ id:Date.now() }; S.chores.push(target); }
+        target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=d.icon; target.effort=d.effort; target.pinned=d.pinned;
+        delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
+        if(d.freq==="Semanal") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+        if(d.freq==="Quincenal") target.startDate=d.startDate;
+        if(d.freq==="Mensual") target.dayOfMonth=d.dayOfMonth;
+        save(); editingId=null; S.modal=null; render();
       }})
     ));
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Nueva tarea"}), modalBody));
+    if(editingId){
+      modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:#fdecea;color:#c62828;font:inherit;font-weight:700;cursor:pointer;",
+        onClick:function(){
+          for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
+          save(); editingId=null; S.modal=null; render();
+        }, text:"Eliminar tarea" }));
+    }
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ editingId=null; S.modal=null; render(); } }},
+      h("div",{class:"modal"}, h("h3",{text:(editingId?"Editar tarea":"Nueva tarea")}), modalBody));
   }
 
   // ---------- names modal ----------
