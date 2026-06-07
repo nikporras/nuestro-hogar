@@ -451,6 +451,58 @@
     else S.doneLog[key]=ch.assignee;
     save(); render();
   }
+
+  // ---------- period helpers ----------
+  // The "current period" for a chore — once every scheduled occurrence inside it is done,
+  // the chore is auto-unlocked so the next Shuffle can move it.
+  function currentPeriodRange(c){
+    if(c.freq==="Daily" && (!c.weekdays || c.weekdays.length===0)){
+      return { start:new Date(TODAY), end:new Date(TODAY) };
+    }
+    if(c.freq==="Daily" || c.freq==="Weekly"){
+      var wk=startOfWeek(TODAY);
+      return { start:wk, end:addDays(wk,6) };
+    }
+    if(c.freq==="Biweekly"){
+      if(!c.startDate) return null;
+      var p=String(c.startDate).split("-");
+      var a=new Date(+p[0],(+p[1])-1,+p[2]); a.setHours(0,0,0,0);
+      var diff=daysBetween(a,TODAY);
+      if(diff<0) return null;
+      var s=addDays(a, Math.floor(diff/14)*14);
+      return { start:s, end:addDays(s,13) };
+    }
+    if(c.freq==="Monthly"){
+      if(c.startDate){
+        var p2=String(c.startDate).split("-");
+        var a2=new Date(+p2[0],(+p2[1])-1,+p2[2]); a2.setHours(0,0,0,0);
+        var diff2=daysBetween(a2,TODAY);
+        if(diff2<0) return null;
+        var s2=addDays(a2, Math.floor(diff2/28)*28);
+        return { start:s2, end:addDays(s2,27) };
+      }
+      var first=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
+      var last=new Date(TODAY.getFullYear(),TODAY.getMonth()+1,0);
+      return { start:first, end:last };
+    }
+    return null;
+  }
+  // True if there was at least one occurrence in this period AND all of them are done.
+  function periodIsComplete(c){
+    var range=currentPeriodRange(c);
+    if(!range) return false;
+    var any=false;
+    for(var d=new Date(range.start); d<=range.end; d=addDays(d,1)){
+      if(isDue(c,d)){
+        any=true;
+        if(!isDone(c,d)) return false;
+      }
+    }
+    return any;
+  }
+  // What the rest of the app should treat as "locked right now" — auto-unlocks once the
+  // current period is fully completed.
+  function effectivelyPinned(c){ return !!c.pinned && !periodIsComplete(c); }
   function choresForDay(date){
     return S.chores.filter(function(c){
       if(!isDue(c,date)) return false;
@@ -484,21 +536,21 @@
     S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
     return t;
   }
-  // Deal out the UNLOCKED tasks so both people end up with as equal a TOTAL
-  // EFFORT as possible, then LOCK each task to its person. Locked (pinned)
-  // tasks are untouched and their effort counts toward the running balance, so
-  // only newly-added (unlocked) tasks get dealt. A task stays with its person
-  // until you unlock it from its settings.
+  // Deal out the unlocked tasks (and any whose current period is already fully done)
+  // so both people end up with as equal a total effort as possible, then re-lock each
+  // task to its person. A task auto-unlocks once every occurrence in its current period
+  // (this week / this 2-week cycle / this 4-week cycle / this month) is marked done —
+  // which is when Shuffle becomes able to move it again.
   function shuffleAssignments(){
     var totals=[0,0];
-    S.chores.forEach(function(c){ if(c.pinned && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
-    var pool=S.chores.filter(function(c){ return !c.pinned; });
-    if(!pool.length){ alert("Nothing to shuffle — every task is already locked to someone. Unlock a task in its settings to put it back in the pool."); return; }
+    S.chores.forEach(function(c){ if(effectivelyPinned(c) && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
+    var pool=S.chores.filter(function(c){ return !effectivelyPinned(c); });
+    if(!pool.length){ alert("Nothing to shuffle — every task is locked to someone for this period. Mark this period's tasks done or unlock a task from its settings."); return; }
     for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
     pool.forEach(function(c){
       var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
       c.assignee=who; totals[who]+=effortOf(c);
-      c.pinned=true;   // lock it to this person
+      c.pinned=true;
     });
     save(); render();
   }
@@ -531,12 +583,12 @@
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(effectivelyPinned(ch)?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
           h("span",{class:"tag person", style:"background:"+pColor(ch.assignee), text:pName(ch.assignee),
-            onClick: ch.pinned ? function(){ openEdit(ch); } : function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
+            onClick: effectivelyPinned(ch) ? function(){ openEdit(ch); } : function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
         )
       )
     );
@@ -1120,7 +1172,7 @@
   function taskRow(c){
     var eff=effortOf(c);
     var main=h("div",{class:"card-main"},
-      h("div",{class:"card-name", text:(c.pinned?"🔒 ":"")+c.name}),
+      h("div",{class:"card-name", text:(effectivelyPinned(c)?"🔒 ":"")+c.name}),
       h("div",{class:"card-tags"},
         h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
         h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
