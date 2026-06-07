@@ -220,7 +220,7 @@
   // The ONLY function that decides whether a chore shows on a given date.
   function isDue(ch, date){
     switch(ch.freq){
-      case "Daily":     return true;
+      case "Daily":     return (ch.weekdays&&ch.weekdays.length) ? ch.weekdays.indexOf(date.getDay())>=0 : true;
       case "Weekly":    return (ch.weekdays||[]).indexOf(date.getDay())>=0;
       case "Biweekly":  { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
                           var d2=new Date(date); d2.setHours(0,0,0,0);
@@ -228,6 +228,25 @@
       case "Monthly":   return date.getDate()===ch.dayOfMonth;
       default: return false;
     }
+  }
+
+  // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
+  function sortedWeekdays(arr){ return (arr||[]).slice().sort(function(a,b){ return ((a+6)%7)-((b+6)%7); }); }
+  // Human-readable "when does this happen" used across the overview & cards.
+  function scheduleLabel(c){
+    if(c.freq==="Daily")    return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
+    if(c.freq==="Weekly")   return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
+    if(c.freq==="Biweekly") return "Every 2 weeks";
+    if(c.freq==="Monthly")  return "Day "+c.dayOfMonth+" each month";
+    return "";
+  }
+  // Tasks whose day is a weekday choice (so we can show quick day-chips).
+  function usesWeekdays(c){ return c.freq==="Daily" || c.freq==="Weekly"; }
+  function toggleWeekday(c, dow){
+    if(!c.weekdays) c.weekdays=[];
+    var k=c.weekdays.indexOf(dow);
+    if(k>=0) c.weekdays.splice(k,1); else c.weekdays.push(dow);
+    save(); render();
   }
 
   // ---------- seed / state ----------
@@ -310,17 +329,21 @@
     S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
     return t;
   }
-  // Re-deal the non-pinned tasks so both people end up with as equal a TOTAL
-  // EFFORT as possible. Randomized (so it varies week to week) but balanced:
-  // shuffle, then give each task to whoever currently has the lighter load.
+  // Deal out the UNLOCKED tasks so both people end up with as equal a TOTAL
+  // EFFORT as possible, then LOCK each task to its person. Locked (pinned)
+  // tasks are untouched and their effort counts toward the running balance, so
+  // only newly-added (unlocked) tasks get dealt. A task stays with its person
+  // until you unlock it from its settings.
   function shuffleAssignments(){
     var totals=[0,0];
     S.chores.forEach(function(c){ if(c.pinned && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
     var pool=S.chores.filter(function(c){ return !c.pinned; });
+    if(!pool.length){ alert("Nothing to shuffle — every task is already locked to someone. Unlock a task in its settings to put it back in the pool."); return; }
     for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
     pool.forEach(function(c){
       var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
       c.assignee=who; totals[who]+=effortOf(c);
+      c.pinned=true;   // lock it to this person
     });
     save(); render();
   }
@@ -353,12 +376,12 @@
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"📌 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
           h("span",{class:"tag person", style:"background:"+pColor(ch.assignee), text:pName(ch.assignee),
-            onClick:function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
+            onClick: ch.pinned ? function(){ openEdit(ch); } : function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
         )
       )
     );
@@ -467,7 +490,7 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” splits the tasks evenly by difficulty. Pin a task (📌) so it stays put."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” deals out the unassigned tasks evenly by difficulty and 🔒 locks each to its person. New tasks start unassigned, ready for the next shuffle. Unlock a task in its settings to put it back in the pool."}));
     wrap.appendChild(rep);
 
     wrap.appendChild(h("div",{class:"section-title", text:"Completed · this week"}));
@@ -548,23 +571,23 @@
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null) d.pinned=false; render(); }, text:(p==null?"Nobody":S.names[p])})); });
     var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"#e3e3ee")+";border-radius:11px;background:"+(d.pinned?"#eef0ff":"#fafaff")+";color:"+(d.pinned?"var(--accent2)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
       onClick:function(){ d.pinned=!d.pinned; render(); },
-      text:(d.pinned?"📌 Pinned to "+S.names[d.assignee]+" (won't shuffle)":"📌 Pin to a person") });
+      text:(d.pinned?"🔒 Locked to "+S.names[d.assignee]+" — tap to unlock (back in shuffle pool)":"🔓 In the shuffle pool — tap to lock to "+S.names[d.assignee]) });
 
     var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn), field("Frequency", freqSeg) ];
-    if(d.freq==="Weekly"){
+    if(d.freq==="Weekly" || d.freq==="Daily"){
       var dp=h("div",{class:"daypick"});
       DOW_SHORT.forEach(function(lbl,idx){
         var dow=(idx); dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
           onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:lbl}));
       });
-      modalBody.push(field("Days", dp));
+      modalBody.push(field(d.freq==="Daily"?"Days (leave empty = every day)":"Days", dp));
     }
     if(d.freq==="Monthly"){
       modalBody.push(field("Day of month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
-    if(d.assignee!=null) modalBody.push(field("Pin", pinBtn));
+    if(d.assignee!=null) modalBody.push(field("Lock", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
       h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ editingId=null; S.modal=null; render(); }}),
       h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){
@@ -576,6 +599,7 @@
         target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
         delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
         if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+        if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
         if(d.freq==="Biweekly") target.startDate=d.startDate;
         if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
         save(); editingId=null; S.modal=null; render();
@@ -657,16 +681,30 @@
   // ---------- all tasks tab ----------
   function taskRow(c){
     var eff=effortOf(c);
-    return h("div",{class:"card", style:"cursor:pointer", onClick:function(){ openEdit(c); }},
-      h("div",{class:"card-icon", text:c.icon}),
-      h("div",{class:"card-main"},
-        h("div",{class:"card-name", text:(c.pinned?"📌 ":"")+c.name}),
-        h("div",{class:"card-tags"},
-          h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
-          h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
-        )
+    var main=h("div",{class:"card-main"},
+      h("div",{class:"card-name", text:(c.pinned?"🔒 ":"")+c.name}),
+      h("div",{class:"card-tags"},
+        h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
+        h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
+        h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
       ),
+      // When does it happen — always shown in the overview.
+      h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
+        h("span",{text:"📆"}), h("span",{text:scheduleLabel(c)}))
+    );
+    // Quick day-chips: tap to set the day(s) right here, no need to open edit.
+    if(usesWeekdays(c)){
+      var strip=h("div",{class:"daypick", style:"margin-top:8px;"});
+      DOW_SHORT.forEach(function(lbl,dow){
+        var on=(c.weekdays||[]).indexOf(dow)>=0;
+        strip.appendChild(h("button",{class:(on?"on":""), style:"padding:6px 0;font-size:10.5px;",
+          onClick:function(e){ e.stopPropagation(); toggleWeekday(c,dow); }, text:lbl[0]}));
+      });
+      main.appendChild(strip);
+    }
+    return h("div",{class:"card", style:"cursor:pointer;align-items:flex-start;", onClick:function(){ openEdit(c); }},
+      h("div",{class:"card-icon", text:c.icon}),
+      main,
       h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
     );
   }
