@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta name="theme-color" content="#667eea" />
 <!-- Phase 1: fully self-contained, no external calls, no secrets. CSP locks everything to 'self'. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https://ohcvdgvsrvqjzxozgpat.supabase.co; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="apple-touch-icon" href="./icons/icon-192.png" />
 <title>Our Home</title>
@@ -301,12 +301,103 @@
   (function(){ var ch=false; S.chores.forEach(function(c){ if(FREQ_MIG[c.freq]){ c.freq=FREQ_MIG[c.freq]; ch=true; } }); if(ch) save(); })();
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
-  function save(){ try{
+  function saveLocal(){ try{
     localStorage.setItem("nh_chores",JSON.stringify(S.chores));
     localStorage.setItem("nh_names",JSON.stringify(S.names));
     localStorage.setItem("nh_doneLog",JSON.stringify(S.doneLog));
     localStorage.setItem("nh_reminders",JSON.stringify(S.reminders));
   }catch(e){} }
+  function save(){ saveLocal(); pushState(); }
+
+  // ---------- Supabase: magic-link auth + single shared JSON document sync ----------
+  var SB_URL  = "https://ohcvdgvsrvqjzxozgpat.supabase.co";
+  var SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9oY3ZkZ3ZzcnZxanp4b3pncGF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDQ3MzYsImV4cCI6MjA5NjQyMDczNn0.S6CzMkkn5BN2GfMgCm91_VUW8Kn-ir1ZmBc5Cj8sGQw";
+  var SESSION = (function(){ try{ return JSON.parse(localStorage.getItem("nh_session")||"null"); }catch(e){ return null; } })();
+  var loginEmail="", loginMsg="", pushTimer=null, lastSyncedAt=0;
+
+  function saveSession(s){ SESSION=s; try{ if(s) localStorage.setItem("nh_session", JSON.stringify(s)); else localStorage.removeItem("nh_session"); }catch(e){} }
+  function isAuthed(){ return !!(SESSION && SESSION.access_token); }
+  function myEmail(){ return SESSION ? SESSION.email : null; }
+  function jwtPayload(t){ try{ var b=t.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"); b+="====".slice(0,(4-(b.length%4))%4); return JSON.parse(decodeURIComponent(escape(atob(b)))); }catch(e){ return {}; } }
+  function authHeaders(useUser){ var hh={ "apikey":SB_ANON, "Content-Type":"application/json" }; if(useUser && SESSION && SESSION.access_token) hh["Authorization"]="Bearer "+SESSION.access_token; return hh; }
+
+  // After tapping the email link we land back here with tokens in the URL hash.
+  function captureAuthFromHash(){
+    if(!location.hash || location.hash.indexOf("access_token=")<0) return;
+    var p={}; location.hash.replace(/^#/,"").split("&").forEach(function(kv){ var i=kv.indexOf("="); if(i>0) p[decodeURIComponent(kv.slice(0,i))]=decodeURIComponent(kv.slice(i+1)); });
+    if(p.access_token){
+      var pay=jwtPayload(p.access_token);
+      saveSession({ access_token:p.access_token, refresh_token:p.refresh_token||"", expires_at:Date.now()+((parseInt(p.expires_in,10)||3600)*1000), email:(pay.email||"").toLowerCase(), user_id:pay.sub||"" });
+    }
+    try{ history.replaceState(null,"",location.pathname+location.search); }catch(e){ location.hash=""; }
+  }
+
+  function sendMagicLink(email){
+    email=(email||"").trim().toLowerCase();
+    if(!email || email.indexOf("@")<1){ loginMsg="Please enter a valid email."; render(); return; }
+    loginMsg="Sending…"; render();
+    fetch(SB_URL+"/auth/v1/otp?redirect_to="+encodeURIComponent(location.origin+location.pathname), { method:"POST", headers:authHeaders(false), body:JSON.stringify({ email:email, create_user:true }) })
+      .then(function(r){ if(r.ok){ loginMsg="✅ Check "+email+" for the sign-in link, then tap it. (Look in spam too.)"; render(); } else { return r.text().then(function(t){ loginMsg="Couldn't send the link. "+t; render(); }); } })
+      .catch(function(){ loginMsg="Network error — please try again."; render(); });
+  }
+  function signOut(){ saveSession(null); lastSyncedAt=0; loginMsg=""; render(); }
+
+  // Refresh the access token if it is close to expiring.
+  function ensureToken(){
+    if(!SESSION || !SESSION.access_token) return Promise.resolve(false);
+    if(Date.now() < (SESSION.expires_at||0) - 60000) return Promise.resolve(true);
+    if(!SESSION.refresh_token) return Promise.resolve(true);
+    return fetch(SB_URL+"/auth/v1/token?grant_type=refresh_token", { method:"POST", headers:authHeaders(false), body:JSON.stringify({ refresh_token:SESSION.refresh_token }) })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){ if(j && j.access_token){ var pay=jwtPayload(j.access_token); saveSession({ access_token:j.access_token, refresh_token:j.refresh_token||SESSION.refresh_token, expires_at:Date.now()+((j.expires_in||3600)*1000), email:(pay.email||SESSION.email||"").toLowerCase(), user_id:pay.sub||SESSION.user_id }); return true; } return false; })
+      .catch(function(){ return true; });
+  }
+
+  function stateDoc(){ return { v:1, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders }; }
+  function applyDoc(d){ if(!d||typeof d!=="object") return; if(Array.isArray(d.chores)) S.chores=d.chores; if(Array.isArray(d.names)&&d.names.length===2) S.names=d.names; if(d.doneLog&&typeof d.doneLog==="object") S.doneLog=d.doneLog; if(Array.isArray(d.reminders)) S.reminders=d.reminders; }
+
+  // Pull the shared document; adopt it if it is newer than what we last synced.
+  function pullState(){
+    if(!isAuthed()) return;
+    ensureToken().then(function(ok){
+      if(!ok){ if(navigator.onLine){ saveSession(null); render(); } return; }
+      fetch(SB_URL+"/rest/v1/household_state?id=eq.1&select=data,updated_at", { headers:authHeaders(true) })
+        .then(function(r){ return r.ok ? r.json() : []; })
+        .then(function(rows){
+          var row=rows&&rows[0]; if(!row) return;
+          var remoteAt=row.updated_at?Date.parse(row.updated_at):0;
+          var empty=!row.data || (typeof row.data==="object" && !Object.keys(row.data).length);
+          if(empty){ pushState(true); return; } // first login: seed the cloud from this device
+          if(remoteAt>lastSyncedAt){ applyDoc(row.data); lastSyncedAt=remoteAt||Date.now(); saveLocal(); render(); }
+        }).catch(function(){});
+    });
+  }
+  function pushNow(){
+    if(!isAuthed()) return;
+    ensureToken().then(function(ok){
+      if(!ok) return;
+      var now=new Date().toISOString();
+      var hh=authHeaders(true); hh["Prefer"]="return=minimal";
+      fetch(SB_URL+"/rest/v1/household_state?id=eq.1", { method:"PATCH", headers:hh, body:JSON.stringify({ data:stateDoc(), updated_at:now, updated_by:myEmail() }) })
+        .then(function(r){ if(r.ok){ lastSyncedAt=Date.parse(now); } }).catch(function(){});
+    });
+  }
+  function pushState(immediate){ if(!isAuthed()) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow, immediate?0:1200); }
+
+  function viewLogin(){
+    var wrap=h("div",{style:"max-width:420px;margin:0 auto;padding:54px 24px;text-align:center;"});
+    wrap.appendChild(h("div",{style:"font-size:54px;",text:"🏠"}));
+    wrap.appendChild(h("div",{style:"font-size:24px;font-weight:800;margin:6px 0 2px;",text:"Our Home"}));
+    wrap.appendChild(h("div",{style:"color:var(--muted);margin-bottom:26px;",text:"Sign in to sync with your partner"}));
+    var emailIn=h("input",{type:"email", inputmode:"email", autocomplete:"email", placeholder:"your email", value:loginEmail,
+      style:"width:100%;padding:13px;border:1.5px solid #e3e3ee;border-radius:12px;font:inherit;font-size:16px;margin-bottom:12px;background:#fafaff;text-align:center;",
+      onInput:function(e){ loginEmail=e.target.value; }});
+    wrap.appendChild(emailIn);
+    wrap.appendChild(h("button",{class:"btn primary", style:"width:100%;", text:"Send me a magic link", onClick:function(){ sendMagicLink(loginEmail); }}));
+    if(loginMsg) wrap.appendChild(h("div",{style:"margin-top:16px;font-size:13px;line-height:1.5;",text:loginMsg}));
+    wrap.appendChild(h("div",{style:"margin-top:22px;font-size:11px;color:var(--muted);line-height:1.5;",text:"You'll get a one-tap sign-in link by email. Only the two of you can access this home."}));
+    return wrap;
+  }
 
   // Seed a realistic-looking history for the current week so Logros/Mes look alive.
   function seedDoneLog(){
@@ -789,6 +880,12 @@
         weeklyRow
       );
     }
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Account"}),
+      h("div",{style:"font-size:12.5px;color:var(--text);margin-bottom:10px;", text:"Signed in as "+(myEmail()||"—")}),
+      h("button",{ style:"width:100%;padding:11px;border:1.5px solid #f3c0c0;border-radius:11px;background:#fff;color:#c62828;font:inherit;font-weight:700;cursor:pointer;", onClick:function(){ if(confirm("Sign out of "+(myEmail()||"this account")+"? Your data stays safe in the cloud.")){ S.modal=null; signOut(); } }, text:"Sign out" })
+    );
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
       h("div",{class:"modal"}, children));
   }
@@ -1008,6 +1105,7 @@
   function render(){
     var root=document.getElementById("root");
     root.innerHTML="";
+    if(!isAuthed()){ document.body.classList.remove("modal-open"); root.appendChild(viewLogin()); return; }
     root.appendChild(header());
     var body;
     if(S.tab==="today") body=viewToday();
@@ -1024,8 +1122,13 @@
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
+  captureAuthFromHash();
   maybeWeeklySnapshot();
   render();
+  if(isAuthed()) pullState();
+  setInterval(function(){ if(isAuthed() && document.visibilityState!=="hidden") pullState(); }, 10000);
+  document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible") pullState(); });
+  window.addEventListener("online", pullState);
 })();
 
 // Register the Service Worker for offline use (no-op when opened via file://).
