@@ -99,6 +99,9 @@
   .mcell.today .d{background:var(--accent2);color:#fff;border-radius:50%;width:19px;height:19px;display:flex;align-items:center;justify-content:center;}
   .mcell .dots{display:flex;gap:2px;flex-wrap:wrap;justify-content:center;margin-top:3px;}
   .mcell .mdot{width:5px;height:5px;border-radius:50%;}
+  .mcell{cursor:pointer;}
+  .mcell.out{cursor:default;}
+  .mcell.sel{outline:2px solid var(--accent1);outline-offset:-2px;}
 
   /* Logros */
   .vs-card{background:var(--surface);border-radius:18px;padding:18px;box-shadow:var(--shadow);margin-bottom:14px;}
@@ -284,6 +287,9 @@
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
     selectedWeekDay: TODAY.getDay(),
+    weekOffset: 0,
+    monthOffset: 0,
+    monthSelected: null,
     filterPerson: null,
     modal: null
   };
@@ -569,9 +575,21 @@
     return wrap;
   }
 
+  // Round arrow button used for week/month navigation.
+  function navBtn(label, onClick){ return h("button",{ style:"border:none;background:#fff;color:var(--accent2);font-size:22px;font-weight:700;width:38px;height:38px;border-radius:50%;box-shadow:var(--shadow);cursor:pointer;line-height:1;flex-shrink:0;", onClick:onClick, text:label }); }
+
   function viewWeek(){
     var wrap=h("div",{class:"content"});
-    var wk=startOfWeek(TODAY);
+    var wk=addDays(startOfWeek(TODAY), S.weekOffset*7);
+    var wkEnd=addDays(wk,6);
+    var label = S.weekOffset===0 ? "This week" : (S.weekOffset===1 ? "Next week" : (S.weekOffset===-1 ? "Last week" :
+                MONTHS[wk.getMonth()].slice(0,3)+" "+wk.getDate()+" – "+MONTHS[wkEnd.getMonth()].slice(0,3)+" "+wkEnd.getDate()));
+    wrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:2px 4px 12px;"},
+      navBtn("‹", function(){ S.weekOffset--; render(); }),
+      h("div",{style:"font-weight:700;font-size:14px;text-align:center;"}, label,
+        S.weekOffset!==0 ? h("div",{style:"font-size:11px;color:var(--accent2);font-weight:700;margin-top:2px;cursor:pointer;", text:"Back to this week", onClick:function(){ S.weekOffset=0; render(); }}) : null),
+      navBtn("›", function(){ S.weekOffset++; render(); })
+    ));
     var strip=h("div",{class:"week-strip"});
     for(var i=0;i<7;i++){
       (function(i){
@@ -601,19 +619,25 @@
 
   function viewMonth(){
     var wrap=h("div",{class:"content"});
-    wrap.appendChild(h("div",{class:"section-title", text:MONTHS[TODAY.getMonth()]+" "+TODAY.getFullYear()}));
+    var mFirst=new Date(TODAY.getFullYear(), TODAY.getMonth()+S.monthOffset, 1);
+    wrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:2px 4px 10px;"},
+      navBtn("‹", function(){ S.monthOffset--; S.monthSelected=null; render(); }),
+      h("div",{style:"font-weight:700;font-size:14px;", text:MONTHS[mFirst.getMonth()]+" "+mFirst.getFullYear()}),
+      navBtn("›", function(){ S.monthOffset++; S.monthSelected=null; render(); })
+    ));
     var head=h("div",{class:"month-head"});
     ["M","T","W","T","F","S","S"].forEach(function(d){ head.appendChild(h("div",{text:d})); });
     wrap.appendChild(head);
-    var first=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
-    var lead=(first.getDay()+6)%7; // Monday-based
+    var lead=(mFirst.getDay()+6)%7; // Monday-based
     var grid=h("div",{class:"month-grid"});
-    var start=addDays(first,-lead);
+    var start=addDays(mFirst,-lead);
     for(var i=0;i<42;i++){
       (function(i){
         var day=addDays(start,i);
-        var out=day.getMonth()!==TODAY.getMonth();
-        var cell=h("div",{class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")},
+        var out=day.getMonth()!==mFirst.getMonth();
+        var isSel=S.monthSelected===ymd(day);
+        var cell=h("div",{class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
+          onClick:function(){ if(out) return; S.monthSelected=ymd(day); render(); }},
           h("div",{class:"d",text:String(day.getDate())}));
         if(!out){
           var due=S.chores.filter(function(c){return isDue(c,day);});
@@ -637,7 +661,17 @@
         h("span",{style:"width:8px;height:8px;border-radius:50%;background:"+FC[f]}), f));
     });
     wrap.appendChild(leg);
-    wrap.appendChild(h("button",{ style:"margin:20px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send this week to calendar" }));
+    // tasks for the tapped day
+    if(S.monthSelected){
+      var sp=S.monthSelected.split("-"); var selDate=new Date(+sp[0],(+sp[1])-1,+sp[2]);
+      var dueList=S.chores.filter(function(c){ if(!isDue(c,selDate)) return false; if(S.filterPerson!==null && c.assignee!==S.filterPerson) return false; return true; });
+      wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[selDate.getDay()]+" "+selDate.getDate()+" "+MONTHS[selDate.getMonth()]}));
+      if(dueList.length===0){ wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:6px 0 10px;", text:"No tasks this day."})); }
+      else dueList.forEach(function(c){ wrap.appendChild(choreCard(c, selDate)); });
+    } else {
+      wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
+    }
+    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send this week to calendar" }));
     wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Creates events for the next 7 days, no repeats. Do it each week to send the next one." }));
     return wrap;
   }
