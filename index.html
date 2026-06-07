@@ -144,6 +144,10 @@
   .overlay{position:fixed;inset:0;background:rgba(40,30,60,.45);display:flex;align-items:flex-end;justify-content:center;z-index:40;}
   .modal{background:#fff;width:100%;max-width:480px;border-radius:22px 22px 0 0;padding:20px 18px 26px;}
   .modal h3{margin:0 0 16px;font-size:18px;}
+  .modal.tall{height:90vh;max-height:90vh;display:flex;flex-direction:column;}
+  .sheet-top{flex-shrink:0;cursor:grab;}
+  .grab{width:40px;height:5px;border-radius:3px;background:#dcdce6;margin:0 auto 12px;}
+  .modal-scroll{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch;}
   .field{margin-bottom:14px;}
   .field label{display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;}
   .field input, .field select{width:100%;padding:11px 12px;border:1.5px solid #e3e3ee;border-radius:11px;font:inherit;font-size:15px;background:#fafaff;}
@@ -225,7 +229,10 @@
       case "Biweekly":  { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
                           var d2=new Date(date); d2.setHours(0,0,0,0);
                           var diff=daysBetween(anchor,d2); return diff>=0 && diff%14===0; }
-      case "Monthly":   return date.getDate()===ch.dayOfMonth;
+      case "Monthly":   { if(ch.startDate){ var sp2=String(ch.startDate).split("-"); var anchor2=new Date(+sp2[0],(+sp2[1])-1,+sp2[2]); anchor2.setHours(0,0,0,0);
+                            var d3=new Date(date); d3.setHours(0,0,0,0);
+                            var diff2=daysBetween(anchor2,d3); return diff2>=0 && diff2%28===0; }
+                          return date.getDate()===ch.dayOfMonth; }
       default: return false;
     }
   }
@@ -240,7 +247,7 @@
     if(c.freq==="Daily")    return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
     if(c.freq==="Weekly")   return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
     if(c.freq==="Biweekly") return "Every 2 weeks · "+DOW_SHORT[weekdayOfYMD(c.startDate)];
-    if(c.freq==="Monthly")  return "Day "+c.dayOfMonth+" each month";
+    if(c.freq==="Monthly")  return c.startDate ? "Every 4 weeks · "+DOW_SHORT[weekdayOfYMD(c.startDate)] : "Day "+c.dayOfMonth+" each month";
     return "";
   }
   // Tasks whose day is a weekday choice (so we can show quick day-chips).
@@ -642,8 +649,7 @@
     delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
     if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
     if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
-    if(d.freq==="Biweekly") target.startDate=d.startDate;
-    if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
+    if(d.freq==="Biweekly" || d.freq==="Monthly") target.startDate=d.startDate;
     save(); editingId=null; draftOriginal=null; S.modal=null;
     return true;
   }
@@ -657,12 +663,13 @@
       } else { closeAdd(); }
     } else { closeAdd(); }
   }
-  // Drag the sheet downward to dismiss it.
-  function attachSwipeClose(el, onClose){
+  // Drag the handle/title area downward to dismiss the sheet. Listening on the
+  // handle (not the scrollable body) makes it work on tall forms too.
+  function attachSwipeClose(handleEl, sheetEl, onClose){
     var startY=null, curY=0, dragging=false;
-    el.addEventListener("touchstart", function(e){ if(e.touches.length===1){ startY=e.touches[0].clientY; curY=startY; dragging=true; } }, {passive:true});
-    el.addEventListener("touchmove", function(e){ if(!dragging) return; curY=e.touches[0].clientY; var dy=curY-startY; if(dy>0){ el.style.transform="translateY("+dy+"px)"; el.style.transition="none"; } }, {passive:true});
-    el.addEventListener("touchend", function(){ if(!dragging) return; dragging=false; var dy=curY-startY; el.style.transform=""; el.style.transition=""; if(dy>90){ onClose(); } });
+    handleEl.addEventListener("touchstart", function(e){ if(e.touches.length===1){ startY=e.touches[0].clientY; curY=startY; dragging=true; } }, {passive:true});
+    handleEl.addEventListener("touchmove", function(e){ if(!dragging) return; curY=e.touches[0].clientY; var dy=curY-startY; if(dy>0){ sheetEl.style.transform="translateY("+dy+"px)"; sheetEl.style.transition="none"; } }, {passive:true});
+    handleEl.addEventListener("touchend", function(){ if(!dragging) return; dragging=false; var dy=curY-startY; sheetEl.style.transform=""; sheetEl.style.transition=""; if(dy>90){ onClose(); } });
   }
   function modalAdd(){
     var d=draft;
@@ -692,17 +699,14 @@
       });
       modalBody.push(field(d.freq==="Daily"?"Days (leave empty = every day)":"Days", dp));
     }
-    if(d.freq==="Biweekly"){
+    if(d.freq==="Biweekly" || d.freq==="Monthly"){
       var bdp=h("div",{class:"daypick"});
       var selW=weekdayOfYMD(d.startDate);
       DOW_SHORT.forEach(function(lbl,idx){
         bdp.appendChild(h("button",{class:(selW===idx?"on":""),
           onClick:function(){ d.startDate=nextWeekdayYMD(idx); render(); }, text:lbl}));
       });
-      modalBody.push(field("Every 2 weeks on", bdp));
-    }
-    if(d.freq==="Monthly"){
-      modalBody.push(field("Day of the month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
+      modalBody.push(field(d.freq==="Biweekly"?"Every 2 weeks on":"Every 4 weeks on", bdp));
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
@@ -718,10 +722,11 @@
           save(); editingId=null; draftOriginal=null; S.modal=null; render();
         }, text:"Delete task" }));
     }
-    var sheet=h("div",{class:"modal"},
-      h("div",{style:"width:38px;height:4px;border-radius:3px;background:#ddd;margin:-6px auto 12px;"}),
-      h("h3",{text:(editingId?"Edit task":"New task")}), modalBody);
-    attachSwipeClose(sheet, tryCloseAdd);
+    var topBar=h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{text:(editingId?"Edit task":"New task")}));
+    var sheet=h("div",{class:"modal tall"}, topBar, h("div",{class:"modal-scroll"}, modalBody));
+    attachSwipeClose(topBar, sheet, tryCloseAdd);
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ tryCloseAdd(); } }}, sheet);
   }
 
