@@ -785,7 +785,7 @@
     } else {
       wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
     }
-    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send this week to calendar" }));
+    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send next 7 days to calendar" }));
     wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Creates events for the next 7 days, no repeats. Do it each week to send the next one." }));
     return wrap;
   }
@@ -1088,7 +1088,7 @@
         onClick:function(){ S.modal=null; render(); fn(); }, text:label});
     }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Export this week"}),
+      h("div",{class:"modal"}, h("h3",{text:"Export next 7 days"}),
         h("div",{style:"font-size:13px;color:var(--muted);margin-bottom:6px;",text:"Whose tasks should go in the calendar?"}),
         pick("Both of us", "var(--accent2)", function(){ downloadICS(null); }),
         pick(S.names[0]+" only", pColor(0), function(){ downloadICS(0); }),
