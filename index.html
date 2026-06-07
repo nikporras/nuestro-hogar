@@ -232,11 +232,14 @@
 
   // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
   function sortedWeekdays(arr){ return (arr||[]).slice().sort(function(a,b){ return ((a+6)%7)-((b+6)%7); }); }
+  // Biweekly helpers: the weekday a date-string lands on, and the next such weekday from today.
+  function weekdayOfYMD(s){ var p=String(s).split("-"); return new Date(+p[0],(+p[1])-1,+p[2]).getDay(); }
+  function nextWeekdayYMD(w){ var d=new Date(TODAY); var add=(w - d.getDay() + 7)%7; d.setDate(d.getDate()+add); return ymd(d); }
   // Human-readable "when does this happen" used across the overview & cards.
   function scheduleLabel(c){
     if(c.freq==="Daily")    return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
     if(c.freq==="Weekly")   return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
-    if(c.freq==="Biweekly") return "Every 2 weeks";
+    if(c.freq==="Biweekly") return "Every 2 weeks · "+DOW_SHORT[weekdayOfYMD(c.startDate)];
     if(c.freq==="Monthly")  return "Day "+c.dayOfMonth+" each month";
     return "";
   }
@@ -326,7 +329,9 @@
   }
 
   // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
-  function addReminder(text, who){ S.reminders.push({ id:Date.now(), text:text, assignee:who, done:false, ts:Date.now() }); save(); }
+  function addReminder(text, who, remindAt){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:remindAt||null, done:false, ts:Date.now() }); save(); }
+  // Format a "YYYY-MM-DDTHH:MM" local datetime for display.
+  function formatWhen(s){ try{ var d=new Date(s); if(isNaN(d.getTime())) return s; return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}); }catch(e){ return s; } }
   function toggleReminder(r){ r.done=!r.done; save(); render(); }
   function deleteReminder(r){ var i=S.reminders.indexOf(r); if(i>=0){ S.reminders.splice(i,1); save(); render(); } }
   function openReminders(){
@@ -403,15 +408,17 @@
   }
 
   function reminderCard(r){
+    var main=h("div",{class:"card-main"},
+      h("div",{class:"card-name", text:r.text}),
+      h("div",{class:"card-tags"},
+        h("span",{class:"tag person", style:"background:"+pColor(r.assignee), text:pName(r.assignee)})
+      )
+    );
+    if(r.remindAt){ main.appendChild(h("div",{style:"font-size:11.5px;color:var(--accent2);font-weight:600;margin-top:5px;", text:"🔔 "+formatWhen(r.remindAt)})); }
     return h("div",{class:"card"},
       h("div",{class:"check"+(r.done?" on":""), onClick:function(){ toggleReminder(r); }}, r.done?"✓":""),
       h("div",{class:"card-icon", text:"📝"}),
-      h("div",{class:"card-main"},
-        h("div",{class:"card-name", text:r.text}),
-        h("div",{class:"card-tags"},
-          h("span",{class:"tag person", style:"background:"+pColor(r.assignee), text:pName(r.assignee)})
-        )
-      ),
+      main,
       h("div",{style:"cursor:pointer;color:var(--muted);font-size:17px;padding:0 4px;", text:"🗑️", onClick:function(){ deleteReminder(r); }})
     );
   }
@@ -429,20 +436,26 @@
 
   // add-reminder modal
   var reminderDraft;
-  function openReminder(){ reminderDraft={ text:"", assignee:(S.filterPerson!==null?S.filterPerson:null) }; S.modal="reminder"; render(); }
+  function openReminder(){ reminderDraft={ text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"" }; S.modal="reminder"; render(); }
   function modalReminder(){
     function field(label,input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
     var d=reminderDraft;
     var textIn=h("input",{type:"text", placeholder:"e.g. Buy soap", value:d.text, onInput:function(e){ d.text=e.target.value; }});
     var assignSeg=h("div",{class:"seg"});
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:(p==null?"Anyone":S.names[p])})); });
+    var whenIn=h("input",{type:"datetime-local", value:d.remindAt||"", onInput:function(e){ d.remindAt=e.target.value; }});
+    var notifNote = (("Notification" in window) && Notification.permission==="granted")
+      ? "You'll get a notification at this time once the server is set up."
+      : "Turn on notifications in Settings (⚙️) to be alerted at this time.";
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
       h("div",{class:"modal"}, h("h3",{text:"New reminder"}),
         field("What", textIn),
         field("For", assignSeg),
+        field("Remind me at (optional)", whenIn),
+        h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 0 12px;", text:notifNote}),
         h("div",{class:"modal-actions"},
           h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
-          h("button",{class:"btn primary", text:"Add", onClick:function(){ if(!d.text.trim()) return; addReminder(d.text.trim(), d.assignee); S.modal=null; render(); }})
+          h("button",{class:"btn primary", text:"Add", onClick:function(){ if(!d.text.trim()) return; addReminder(d.text.trim(), d.assignee, d.remindAt); S.modal=null; render(); }})
         )
       ));
   }
@@ -602,10 +615,11 @@
   }
 
   // ---------- add / edit chore modal ----------
-  var draft; var editingId=null;
+  var draft; var editingId=null; var draftOriginal=null;
   function openAdd(){
     editingId=null;
     draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false };
+    draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
   function openEdit(c){
@@ -613,7 +627,42 @@
     draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
       weekdays:(c.weekdays?c.weekdays.slice():[]), dayOfMonth:c.dayOfMonth||1,
       startDate:c.startDate||ymd(startOfWeek(TODAY)), effort:effortOf(c), pinned:!!c.pinned };
+    draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
+  }
+  // Persist the draft to the chore list. Returns false if invalid (no name).
+  function commitDraft(){
+    var d=draft;
+    if(!d.name.trim()) return false;
+    var target=null;
+    if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
+    if(!target){ target={ id:Date.now() }; S.chores.push(target); }
+    var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
+    target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
+    delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
+    if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+    if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
+    if(d.freq==="Biweekly") target.startDate=d.startDate;
+    if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
+    save(); editingId=null; draftOriginal=null; S.modal=null;
+    return true;
+  }
+  function closeAdd(){ editingId=null; draftOriginal=null; S.modal=null; render(); }
+  function isDraftDirty(){ return draftOriginal!=null && JSON.stringify(draft)!==draftOriginal; }
+  // Used by swipe-down and tap-outside: guard against losing unsaved edits.
+  function tryCloseAdd(){
+    if(isDraftDirty()){
+      if(confirm("You have unsaved changes — save them before closing?")){
+        if(commitDraft()) render(); else alert("Add a task name first, or tap Cancel to discard.");
+      } else { closeAdd(); }
+    } else { closeAdd(); }
+  }
+  // Drag the sheet downward to dismiss it.
+  function attachSwipeClose(el, onClose){
+    var startY=null, curY=0, dragging=false;
+    el.addEventListener("touchstart", function(e){ if(e.touches.length===1){ startY=e.touches[0].clientY; curY=startY; dragging=true; } }, {passive:true});
+    el.addEventListener("touchmove", function(e){ if(!dragging) return; curY=e.touches[0].clientY; var dy=curY-startY; if(dy>0){ el.style.transform="translateY("+dy+"px)"; el.style.transition="none"; } }, {passive:true});
+    el.addEventListener("touchend", function(){ if(!dragging) return; dragging=false; var dy=curY-startY; el.style.transform=""; el.style.transition=""; if(dy>90){ onClose(); } });
   }
   function modalAdd(){
     var d=draft;
@@ -643,38 +692,37 @@
       });
       modalBody.push(field(d.freq==="Daily"?"Days (leave empty = every day)":"Days", dp));
     }
+    if(d.freq==="Biweekly"){
+      var bdp=h("div",{class:"daypick"});
+      var selW=weekdayOfYMD(d.startDate);
+      DOW_SHORT.forEach(function(lbl,idx){
+        bdp.appendChild(h("button",{class:(selW===idx?"on":""),
+          onClick:function(){ d.startDate=nextWeekdayYMD(idx); render(); }, text:lbl}));
+      });
+      modalBody.push(field("Every 2 weeks on", bdp));
+    }
     if(d.freq==="Monthly"){
-      modalBody.push(field("Day of month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
+      modalBody.push(field("Day of the month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
     if(d.assignee!=null) modalBody.push(field("Lock", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
-      h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ editingId=null; S.modal=null; render(); }}),
-      h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){
-        if(!d.name.trim()) return;
-        var target=null;
-        if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
-        if(!target){ target={ id:Date.now() }; S.chores.push(target); }
-        var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
-        target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
-        delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
-        if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
-        if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
-        if(d.freq==="Biweekly") target.startDate=d.startDate;
-        if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
-        save(); editingId=null; S.modal=null; render();
-      }})
+      h("button",{class:"btn ghost", text:"Cancel", onClick:closeAdd}),
+      h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){ if(commitDraft()) render(); }})
     ));
     if(editingId){
       modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:#fdecea;color:#c62828;font:inherit;font-weight:700;cursor:pointer;",
         onClick:function(){
           for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
-          save(); editingId=null; S.modal=null; render();
+          save(); editingId=null; draftOriginal=null; S.modal=null; render();
         }, text:"Delete task" }));
     }
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ editingId=null; S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:(editingId?"Edit task":"New task")}), modalBody));
+    var sheet=h("div",{class:"modal"},
+      h("div",{style:"width:38px;height:4px;border-radius:3px;background:#ddd;margin:-6px auto 12px;"}),
+      h("h3",{text:(editingId?"Edit task":"New task")}), modalBody);
+    attachSwipeClose(sheet, tryCloseAdd);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ tryCloseAdd(); } }}, sheet);
   }
 
   // ---------- names modal ----------
@@ -700,6 +748,17 @@
         }})
       )
     ];
+
+    // Notifications — available on every device (each phone grants its own).
+    var ns=notifStatus();
+    var notifBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid #e3e3ee;border-radius:11px;background:#fafaff;color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:enableNotifications,
+      text: ns==="granted" ? "✅ Notifications are on" : (ns==="denied" ? "🔕 Blocked — fix in browser settings" : (ns==="unsupported" ? "Not supported on this device" : "🔔 Enable notifications")) });
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Notifications"}),
+      notifBtn,
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Delivery activates once the server is set up."})
+    );
 
     // Backup controls are available only on the first person's phone (Nico).
     if(S.deviceUser===0){
@@ -833,6 +892,39 @@
     S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
     save(); S.modal=null; render();
     alert("Restored the weekly backup.");
+  }
+
+  // ---------- notifications (web push) ----------
+  // Front-end scaffolding for real push notifications (e.g. reminders at a set
+  // time). Delivery requires the Supabase backend + a scheduler that sends the
+  // push; here we handle permission, the subscription, and storing it. Set
+  // VAPID_PUBLIC_KEY once the backend is configured and subscriptions activate.
+  var VAPID_PUBLIC_KEY = ""; // TODO(Supabase): paste the VAPID public key here
+  function urlBase64ToUint8Array(base64String){
+    var padding="=".repeat((4 - base64String.length % 4) % 4);
+    var base64=(base64String + padding).replace(/-/g,"+").replace(/_/g,"/");
+    var raw=atob(base64); var arr=new Uint8Array(raw.length);
+    for(var i=0;i<raw.length;i++){ arr[i]=raw.charCodeAt(i); }
+    return arr;
+  }
+  function notifStatus(){ return ("Notification" in window) ? Notification.permission : "unsupported"; }
+  function enableNotifications(){
+    if(!("Notification" in window)){ alert("This device doesn't support notifications."); return; }
+    Notification.requestPermission().then(function(perm){
+      if(perm==="granted"){ try{ localStorage.setItem("nh_notif","1"); }catch(e){} subscribeToPush(); }
+      else if(perm==="denied"){ alert("Notifications are blocked. Re-enable them in your browser/site settings."); }
+      render();
+    });
+  }
+  function subscribeToPush(){
+    if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    if(!VAPID_PUBLIC_KEY) return; // backend not configured yet — permission is stored; subscription comes later
+    navigator.serviceWorker.ready.then(function(reg){
+      return reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
+    }).then(function(sub){
+      try{ localStorage.setItem("nh_pushSub", JSON.stringify(sub)); }catch(e){}
+      // TODO(Supabase): POST { sub:sub, user:S.deviceUser } so the scheduler can deliver reminder pushes.
+    }).catch(function(e){ console.warn("Push subscribe failed:", e); });
   }
 
   // ---------- all tasks tab ----------
