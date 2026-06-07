@@ -434,7 +434,7 @@
   }
 
   // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
-  function addReminder(text, who, remindAt){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:remindAt||null, done:false, ts:Date.now() }); save(); }
+  function addReminder(text, who, remindAt){ var iso=null; if(remindAt){ var dt=new Date(remindAt); if(!isNaN(dt.getTime())) iso=dt.toISOString(); } S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:iso, done:false, ts:Date.now() }); save(); }
   // Format a "YYYY-MM-DDTHH:MM" local datetime for display.
   function formatWhen(s){ try{ var d=new Date(s); if(isNaN(d.getTime())) return s; return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}); }catch(e){ return s; } }
   function toggleReminder(r){ r.done=!r.done; save(); render(); }
@@ -550,7 +550,7 @@
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:(p==null?"Anyone":S.names[p])})); });
     var whenIn=h("input",{type:"datetime-local", value:d.remindAt||"", onInput:function(e){ d.remindAt=e.target.value; }});
     var notifNote = (("Notification" in window) && Notification.permission==="granted")
-      ? "You'll get a notification at this time once the server is set up."
+      ? "You'll get a notification at this time."
       : "Turn on notifications in Settings (⚙️) to be alerted at this time.";
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
       h("div",{class:"modal"}, h("h3",{text:"New reminder"}),
@@ -844,6 +844,7 @@
     if(editingId){
       modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:#fdecea;color:#c62828;font:inherit;font-weight:700;cursor:pointer;",
         onClick:function(){
+          if(!confirm("Delete \""+(draft.name||"this task")+"\"? This can't be undone.")) return;
           for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
           save(); editingId=null; draftOriginal=null; S.modal=null; render();
         }, text:"Delete task" }));
@@ -888,7 +889,7 @@
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Notifications"}),
       notifBtn,
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Delivery activates once the server is set up."})
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Each phone enables its own."})
     );
 
     // Backup controls are available only on the first person's phone (Nico).
@@ -1032,11 +1033,9 @@
   }
 
   // ---------- notifications (web push) ----------
-  // Front-end scaffolding for real push notifications (e.g. reminders at a set
-  // time). Delivery requires the Supabase backend + a scheduler that sends the
-  // push; here we handle permission, the subscription, and storing it. Set
-  // VAPID_PUBLIC_KEY once the backend is configured and subscriptions activate.
-  var VAPID_PUBLIC_KEY = ""; // TODO(Supabase): paste the VAPID public key here
+  // Real push delivery: this device subscribes and stores its subscription in
+  // Supabase; a scheduled Edge Function sends the push when a reminder is due.
+  var VAPID_PUBLIC_KEY = "BMA34To-VQu0h-zV0Mp0yIZ7tN_d9GqmDxFooaHkXCy-9V72J-uggxIHGv1RE1_TujG40xzgn7kqAiVtQsVvRzk";
   function urlBase64ToUint8Array(base64String){
     var padding="=".repeat((4 - base64String.length % 4) % 4);
     var base64=(base64String + padding).replace(/-/g,"+").replace(/_/g,"/");
@@ -1055,12 +1054,16 @@
   }
   function subscribeToPush(){
     if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
-    if(!VAPID_PUBLIC_KEY) return; // backend not configured yet — permission is stored; subscription comes later
+    if(!VAPID_PUBLIC_KEY || !isAuthed()) return;
     navigator.serviceWorker.ready.then(function(reg){
       return reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
     }).then(function(sub){
-      try{ localStorage.setItem("nh_pushSub", JSON.stringify(sub)); }catch(e){}
-      // TODO(Supabase): POST { sub:sub, user:S.deviceUser } so the scheduler can deliver reminder pushes.
+      var j=sub.toJSON();
+      try{ localStorage.setItem("nh_pushSub", JSON.stringify(j)); }catch(e){}
+      // Store this phone's subscription so the scheduler can deliver reminder pushes.
+      var hh=authHeaders(true); hh["Prefer"]="resolution=merge-duplicates";
+      return fetch(SB_URL+"/rest/v1/push_subscriptions?on_conflict=endpoint", { method:"POST", headers:hh,
+        body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth }) });
     }).catch(function(e){ console.warn("Push subscribe failed:", e); });
   }
 
