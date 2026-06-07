@@ -562,7 +562,7 @@
     var box=h("div",{});
     box.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:6px 4px 10px;"},
       h("div",{class:"section-title", style:"margin:0;", text:"Reminders"+(open.length?" ("+open.length+")":"")}),
-      h("button",{ style:"border:none;background:#eef0ff;color:var(--accent2);font:inherit;font-weight:700;font-size:12.5px;padding:6px 12px;border-radius:16px;cursor:pointer;", onClick:openReminder, text:"+ Add" })
+      h("button",{ style:"border:none;background:#eef0ff;color:var(--accent2);font:inherit;font-weight:700;font-size:12.5px;padding:6px 12px;border-radius:16px;cursor:pointer;", onClick:function(){ openReminder(); }, text:"+ Add" })
     ));
     if(open.length===0){ box.appendChild(h("div",{style:"color:var(--muted);font-size:13px;padding:0 6px 6px;", text:"Nothing to remember right now."})); }
     else open.forEach(function(r){ box.appendChild(reminderCard(r)); });
@@ -572,9 +572,12 @@
   // add/edit reminder modal
   var reminderDraft, reminderEditing;
   function openReminder(r){
-    reminderEditing = r || null;
-    if(r){
-      reminderDraft = { text:r.text, assignee:r.assignee, remindAt:isoToLocalInput(r.remindAt) };
+    // Only treat the arg as a reminder if it actually looks like one — guards against
+    // accidentally being invoked with a click event.
+    var editing = (r && typeof r==="object" && "text" in r && "id" in r) ? r : null;
+    reminderEditing = editing;
+    if(editing){
+      reminderDraft = { text:editing.text, assignee:editing.assignee, remindAt:isoToLocalInput(editing.remindAt) };
     } else {
       reminderDraft = { text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"" };
     }
