@@ -434,9 +434,13 @@
   }
 
   // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
-  function addReminder(text, who, remindAt){ var iso=null; if(remindAt){ var dt=new Date(remindAt); if(!isNaN(dt.getTime())) iso=dt.toISOString(); } S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:iso, done:false, ts:Date.now() }); save(); }
+  function isoFromLocal(s){ if(!s) return null; var dt=new Date(s); return isNaN(dt.getTime()) ? null : dt.toISOString(); }
+  function addReminder(text, who, remindAt){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:isoFromLocal(remindAt), done:false, ts:Date.now() }); save(); }
+  function updateReminder(r, text, who, remindAt){ r.text=text; r.assignee=who; r.remindAt=isoFromLocal(remindAt); save(); }
   // Format a "YYYY-MM-DDTHH:MM" local datetime for display.
   function formatWhen(s){ try{ var d=new Date(s); if(isNaN(d.getTime())) return s; return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}); }catch(e){ return s; } }
+  // "YYYY-MM-DDTHH:MM" in the device's local time — what <input type="datetime-local"> wants.
+  function isoToLocalInput(iso){ try{ var d=new Date(iso); if(isNaN(d.getTime())) return ""; var p=function(n){return String(n).padStart(2,"0");}; return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes()); }catch(e){ return ""; } }
   function toggleReminder(r){ r.done=!r.done; save(); render(); }
   function deleteReminder(r){ var i=S.reminders.indexOf(r); if(i>=0){ S.reminders.splice(i,1); save(); render(); } }
   function openReminders(){
@@ -520,11 +524,11 @@
       )
     );
     if(r.remindAt){ main.appendChild(h("div",{style:"font-size:11.5px;color:var(--accent2);font-weight:600;margin-top:5px;", text:"🔔 "+formatWhen(r.remindAt)})); }
-    return h("div",{class:"card"},
-      h("div",{class:"check"+(r.done?" on":""), onClick:function(){ toggleReminder(r); }}, r.done?"✓":""),
+    return h("div",{class:"card", style:"cursor:pointer;", onClick:function(){ openReminder(r); }},
+      h("div",{class:"check"+(r.done?" on":""), onClick:function(e){ e.stopPropagation(); toggleReminder(r); }}, r.done?"✓":""),
       h("div",{class:"card-icon", text:"📝"}),
       main,
-      h("div",{style:"cursor:pointer;color:var(--muted);font-size:17px;padding:0 4px;", text:"🗑️", onClick:function(){ deleteReminder(r); }})
+      h("div",{style:"cursor:pointer;color:var(--muted);font-size:17px;padding:0 4px;", text:"🗑️", onClick:function(e){ e.stopPropagation(); if(confirm("Delete this reminder?")) deleteReminder(r); }})
     );
   }
   function remindersSection(){
@@ -539,29 +543,44 @@
     return box;
   }
 
-  // add-reminder modal
-  var reminderDraft;
-  function openReminder(){ reminderDraft={ text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"" }; S.modal="reminder"; render(); }
+  // add/edit reminder modal
+  var reminderDraft, reminderEditing;
+  function openReminder(r){
+    reminderEditing = r || null;
+    if(r){
+      reminderDraft = { text:r.text, assignee:r.assignee, remindAt:isoToLocalInput(r.remindAt) };
+    } else {
+      reminderDraft = { text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"" };
+    }
+    S.modal="reminder"; render();
+  }
   function modalReminder(){
     function field(label,input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
-    var d=reminderDraft;
+    var d=reminderDraft, editing=!!reminderEditing;
     var textIn=h("input",{type:"text", placeholder:"e.g. Buy soap", value:d.text, onInput:function(e){ d.text=e.target.value; }});
     var assignSeg=h("div",{class:"seg"});
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:(p==null?"Anyone":S.names[p])})); });
     var whenIn=h("input",{type:"datetime-local", value:d.remindAt||"", onInput:function(e){ d.remindAt=e.target.value; }});
     var notifNote = (("Notification" in window) && Notification.permission==="granted")
-      ? "You'll get a notification at this time."
+      ? "You'll get a notification at this time, then every hour until you mark it done (up to 24h)."
       : "Turn on notifications in Settings (⚙️) to be alerted at this time.";
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"New reminder"}),
+    function commit(){
+      if(!d.text.trim()) return;
+      if(editing){ updateReminder(reminderEditing, d.text.trim(), d.assignee, d.remindAt); }
+      else { addReminder(d.text.trim(), d.assignee, d.remindAt); }
+      S.modal=null; reminderEditing=null; render();
+    }
+    var actions=h("div",{class:"modal-actions"},
+      h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; reminderEditing=null; render(); }}),
+      h("button",{class:"btn primary", text:editing?"Save":"Add", onClick:commit})
+    );
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; reminderEditing=null; render(); } }},
+      h("div",{class:"modal"}, h("h3",{text:editing?"Edit reminder":"New reminder"}),
         field("What", textIn),
         field("For", assignSeg),
         field("Remind me at (optional)", whenIn),
         h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 0 12px;", text:notifNote}),
-        h("div",{class:"modal-actions"},
-          h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
-          h("button",{class:"btn primary", text:"Add", onClick:function(){ if(!d.text.trim()) return; addReminder(d.text.trim(), d.assignee, d.remindAt); S.modal=null; render(); }})
-        )
+        actions
       ));
   }
 
@@ -1061,9 +1080,10 @@
       var j=sub.toJSON();
       try{ localStorage.setItem("nh_pushSub", JSON.stringify(j)); }catch(e){}
       // Store this phone's subscription so the scheduler can deliver reminder pushes.
+      var tz=null; try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||null; }catch(e){}
       var hh=authHeaders(true); hh["Prefer"]="resolution=merge-duplicates";
       return fetch(SB_URL+"/rest/v1/push_subscriptions?on_conflict=endpoint", { method:"POST", headers:hh,
-        body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth }) });
+        body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth, tz:tz }) });
     }).catch(function(e){ console.warn("Push subscribe failed:", e); });
   }
 
