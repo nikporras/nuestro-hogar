@@ -319,7 +319,7 @@
   var SB_URL  = "https://ohcvdgvsrvqjzxozgpat.supabase.co";
   var SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9oY3ZkZ3ZzcnZxanp4b3pncGF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDQ3MzYsImV4cCI6MjA5NjQyMDczNn0.S6CzMkkn5BN2GfMgCm91_VUW8Kn-ir1ZmBc5Cj8sGQw";
   var SESSION = (function(){ try{ return JSON.parse(localStorage.getItem("nh_session")||"null"); }catch(e){ return null; } })();
-  var loginEmail="", loginMsg="", pushTimer=null, lastSyncedAt=0;
+  var loginEmail="", loginCode="", loginMsg="", loginStage="email", pushTimer=null, lastSyncedAt=0;
 
   function saveSession(s){ SESSION=s; try{ if(s) localStorage.setItem("nh_session", JSON.stringify(s)); else localStorage.removeItem("nh_session"); }catch(e){} }
   function isAuthed(){ return !!(SESSION && SESSION.access_token); }
@@ -338,15 +338,32 @@
     try{ history.replaceState(null,"",location.pathname+location.search); }catch(e){ location.hash=""; }
   }
 
-  function sendMagicLink(email){
+  // Asks Supabase to email a 6-digit code (and a magic link, which we use as a fallback on Android).
+  // iOS Safari can't deep-link the magic link into the installed PWA, so the code is the primary path.
+  function sendOtp(email){
     email=(email||"").trim().toLowerCase();
     if(!email || email.indexOf("@")<1){ loginMsg="Please enter a valid email."; render(); return; }
     loginMsg="Sending…"; render();
     fetch(SB_URL+"/auth/v1/otp?redirect_to="+encodeURIComponent(location.origin+location.pathname), { method:"POST", headers:authHeaders(false), body:JSON.stringify({ email:email, create_user:true }) })
-      .then(function(r){ if(r.ok){ loginMsg="✅ Check "+email+" for the sign-in link, then tap it. (Look in spam too.)"; render(); } else { return r.text().then(function(t){ loginMsg="Couldn't send the link. "+t; render(); }); } })
+      .then(function(r){ if(r.ok){ loginEmail=email; loginCode=""; loginStage="code"; loginMsg="✅ We sent a 6-digit code to "+email+". (Check spam too.)"; render(); } else { return r.text().then(function(t){ loginMsg="Couldn't send the code. "+t; render(); }); } })
       .catch(function(){ loginMsg="Network error — please try again."; render(); });
   }
-  function signOut(){ saveSession(null); lastSyncedAt=0; loginMsg=""; render(); }
+  function verifyOtp(email, code){
+    email=(email||"").trim().toLowerCase();
+    code=(code||"").replace(/\D/g,"");
+    if(code.length<6){ loginMsg="Enter the 6-digit code from the email."; render(); return; }
+    loginMsg="Verifying…"; render();
+    fetch(SB_URL+"/auth/v1/verify", { method:"POST", headers:authHeaders(false), body:JSON.stringify({ email:email, token:code, type:"email" }) })
+      .then(function(r){ return r.ok ? r.json() : r.text().then(function(t){ throw new Error(t); }); })
+      .then(function(j){
+        if(!j || !j.access_token) throw new Error("No token in response.");
+        var pay=jwtPayload(j.access_token);
+        saveSession({ access_token:j.access_token, refresh_token:j.refresh_token||"", expires_at:Date.now()+((j.expires_in||3600)*1000), email:(pay.email||email).toLowerCase(), user_id:pay.sub||"" });
+        loginMsg=""; loginStage="email"; loginCode=""; render();
+      })
+      .catch(function(e){ loginMsg="Couldn't verify the code. "+(e&&e.message?e.message:""); render(); });
+  }
+  function signOut(){ saveSession(null); lastSyncedAt=0; loginMsg=""; loginStage="email"; loginCode=""; render(); }
 
   // Refresh the access token if it is close to expiring.
   function ensureToken(){
@@ -395,13 +412,22 @@
     wrap.appendChild(h("div",{style:"font-size:54px;",text:"🏠"}));
     wrap.appendChild(h("div",{style:"font-size:24px;font-weight:800;margin:6px 0 2px;",text:"Our Home"}));
     wrap.appendChild(h("div",{style:"color:var(--muted);margin-bottom:26px;",text:"Sign in to sync with your partner"}));
-    var emailIn=h("input",{type:"email", inputmode:"email", autocomplete:"email", placeholder:"your email", value:loginEmail,
-      style:"width:100%;padding:13px;border:1.5px solid #e3e3ee;border-radius:12px;font:inherit;font-size:16px;margin-bottom:12px;background:#fafaff;text-align:center;",
-      onInput:function(e){ loginEmail=e.target.value; }});
-    wrap.appendChild(emailIn);
-    wrap.appendChild(h("button",{class:"btn primary", style:"width:100%;", text:"Send me a magic link", onClick:function(){ sendMagicLink(loginEmail); }}));
+    if(loginStage==="code"){
+      var codeIn=h("input",{type:"text", inputmode:"numeric", autocomplete:"one-time-code", maxlength:"6", placeholder:"6-digit code", value:loginCode,
+        style:"width:100%;padding:13px;border:1.5px solid #e3e3ee;border-radius:12px;font:inherit;font-size:22px;letter-spacing:0.4em;text-align:center;margin-bottom:12px;background:#fafaff;",
+        onInput:function(e){ loginCode=e.target.value.replace(/\D/g,"").slice(0,6); }});
+      wrap.appendChild(codeIn);
+      wrap.appendChild(h("button",{class:"btn primary", style:"width:100%;", text:"Verify code", onClick:function(){ verifyOtp(loginEmail, loginCode); }}));
+      wrap.appendChild(h("button",{class:"btn ghost", style:"width:100%;margin-top:10px;", text:"Use a different email", onClick:function(){ loginStage="email"; loginMsg=""; loginCode=""; render(); }}));
+    } else {
+      var emailIn=h("input",{type:"email", inputmode:"email", autocomplete:"email", placeholder:"your email", value:loginEmail,
+        style:"width:100%;padding:13px;border:1.5px solid #e3e3ee;border-radius:12px;font:inherit;font-size:16px;margin-bottom:12px;background:#fafaff;text-align:center;",
+        onInput:function(e){ loginEmail=e.target.value; }});
+      wrap.appendChild(emailIn);
+      wrap.appendChild(h("button",{class:"btn primary", style:"width:100%;", text:"Email me a code", onClick:function(){ sendOtp(loginEmail); }}));
+    }
     if(loginMsg) wrap.appendChild(h("div",{style:"margin-top:16px;font-size:13px;line-height:1.5;",text:loginMsg}));
-    wrap.appendChild(h("div",{style:"margin-top:22px;font-size:11px;color:var(--muted);line-height:1.5;",text:"You'll get a one-tap sign-in link by email. Only the two of you can access this home."}));
+    wrap.appendChild(h("div",{style:"margin-top:22px;font-size:11px;color:var(--muted);line-height:1.5;",text:"You'll get a 6-digit code by email. The link in that email also works on Android. Only the two of you can access this home."}));
     return wrap;
   }
 
