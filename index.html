@@ -220,7 +220,7 @@
   // The ONLY function that decides whether a chore shows on a given date.
   function isDue(ch, date){
     switch(ch.freq){
-      case "Daily":     return true;
+      case "Daily":     return (ch.weekdays&&ch.weekdays.length) ? ch.weekdays.indexOf(date.getDay())>=0 : true;
       case "Weekly":    return (ch.weekdays||[]).indexOf(date.getDay())>=0;
       case "Biweekly":  { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
                           var d2=new Date(date); d2.setHours(0,0,0,0);
@@ -228,6 +228,25 @@
       case "Monthly":   return date.getDate()===ch.dayOfMonth;
       default: return false;
     }
+  }
+
+  // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
+  function sortedWeekdays(arr){ return (arr||[]).slice().sort(function(a,b){ return ((a+6)%7)-((b+6)%7); }); }
+  // Human-readable "when does this happen" used across the overview & cards.
+  function scheduleLabel(c){
+    if(c.freq==="Daily")    return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
+    if(c.freq==="Weekly")   return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
+    if(c.freq==="Biweekly") return "Every 2 weeks";
+    if(c.freq==="Monthly")  return "Day "+c.dayOfMonth+" each month";
+    return "";
+  }
+  // Tasks whose day is a weekday choice (so we can show quick day-chips).
+  function usesWeekdays(c){ return c.freq==="Daily" || c.freq==="Weekly"; }
+  function toggleWeekday(c, dow){
+    if(!c.weekdays) c.weekdays=[];
+    var k=c.weekdays.indexOf(dow);
+    if(k>=0) c.weekdays.splice(k,1); else c.weekdays.push(dow);
+    save(); render();
   }
 
   // ---------- seed / state ----------
@@ -250,6 +269,8 @@
     chores: load("nh_chores", defaultChores()),
     names:  load("nh_names", ["Nico","Caro"]),
     doneLog:load("nh_doneLog", seedDoneLog()),
+    reminders: load("nh_reminders", []),
+    deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
     selectedWeekDay: TODAY.getDay(),
     filterPerson: null,
@@ -273,6 +294,7 @@
     localStorage.setItem("nh_chores",JSON.stringify(S.chores));
     localStorage.setItem("nh_names",JSON.stringify(S.names));
     localStorage.setItem("nh_doneLog",JSON.stringify(S.doneLog));
+    localStorage.setItem("nh_reminders",JSON.stringify(S.reminders));
   }catch(e){} }
 
   // Seed a realistic-looking history for the current week so Logros/Mes look alive.
@@ -303,6 +325,18 @@
     });
   }
 
+  // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
+  function addReminder(text, who){ S.reminders.push({ id:Date.now(), text:text, assignee:who, done:false, ts:Date.now() }); save(); }
+  function toggleReminder(r){ r.done=!r.done; save(); render(); }
+  function deleteReminder(r){ var i=S.reminders.indexOf(r); if(i>=0){ S.reminders.splice(i,1); save(); render(); } }
+  function openReminders(){
+    return S.reminders.filter(function(r){
+      if(r.done) return false;
+      if(S.filterPerson!==null && r.assignee!==S.filterPerson) return false;
+      return true;
+    });
+  }
+
   // ---------- fair workload split ----------
   // Total assigned effort points per person (the fairness measure).
   function assignedPoints(){
@@ -310,17 +344,21 @@
     S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
     return t;
   }
-  // Re-deal the non-pinned tasks so both people end up with as equal a TOTAL
-  // EFFORT as possible. Randomized (so it varies week to week) but balanced:
-  // shuffle, then give each task to whoever currently has the lighter load.
+  // Deal out the UNLOCKED tasks so both people end up with as equal a TOTAL
+  // EFFORT as possible, then LOCK each task to its person. Locked (pinned)
+  // tasks are untouched and their effort counts toward the running balance, so
+  // only newly-added (unlocked) tasks get dealt. A task stays with its person
+  // until you unlock it from its settings.
   function shuffleAssignments(){
     var totals=[0,0];
     S.chores.forEach(function(c){ if(c.pinned && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
     var pool=S.chores.filter(function(c){ return !c.pinned; });
+    if(!pool.length){ alert("Nothing to shuffle — every task is already locked to someone. Unlock a task in its settings to put it back in the pool."); return; }
     for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
     pool.forEach(function(c){
       var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
       c.assignee=who; totals[who]+=effortOf(c);
+      c.pinned=true;   // lock it to this person
     });
     save(); render();
   }
@@ -353,20 +391,66 @@
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"📌 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(ch.pinned?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
           h("span",{class:"tag person", style:"background:"+pColor(ch.assignee), text:pName(ch.assignee),
-            onClick:function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
+            onClick: ch.pinned ? function(){ openEdit(ch); } : function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
         )
       )
     );
   }
 
+  function reminderCard(r){
+    return h("div",{class:"card"},
+      h("div",{class:"check"+(r.done?" on":""), onClick:function(){ toggleReminder(r); }}, r.done?"✓":""),
+      h("div",{class:"card-icon", text:"📝"}),
+      h("div",{class:"card-main"},
+        h("div",{class:"card-name", text:r.text}),
+        h("div",{class:"card-tags"},
+          h("span",{class:"tag person", style:"background:"+pColor(r.assignee), text:pName(r.assignee)})
+        )
+      ),
+      h("div",{style:"cursor:pointer;color:var(--muted);font-size:17px;padding:0 4px;", text:"🗑️", onClick:function(){ deleteReminder(r); }})
+    );
+  }
+  function remindersSection(){
+    var open=openReminders();
+    var box=h("div",{});
+    box.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:6px 4px 10px;"},
+      h("div",{class:"section-title", style:"margin:0;", text:"Reminders"+(open.length?" ("+open.length+")":"")}),
+      h("button",{ style:"border:none;background:#eef0ff;color:var(--accent2);font:inherit;font-weight:700;font-size:12.5px;padding:6px 12px;border-radius:16px;cursor:pointer;", onClick:openReminder, text:"+ Add" })
+    ));
+    if(open.length===0){ box.appendChild(h("div",{style:"color:var(--muted);font-size:13px;padding:0 6px 6px;", text:"Nothing to remember right now."})); }
+    else open.forEach(function(r){ box.appendChild(reminderCard(r)); });
+    return box;
+  }
+
+  // add-reminder modal
+  var reminderDraft;
+  function openReminder(){ reminderDraft={ text:"", assignee:(S.filterPerson!==null?S.filterPerson:null) }; S.modal="reminder"; render(); }
+  function modalReminder(){
+    function field(label,input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
+    var d=reminderDraft;
+    var textIn=h("input",{type:"text", placeholder:"e.g. Buy soap", value:d.text, onInput:function(e){ d.text=e.target.value; }});
+    var assignSeg=h("div",{class:"seg"});
+    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:(p==null?"Anyone":S.names[p])})); });
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
+      h("div",{class:"modal"}, h("h3",{text:"New reminder"}),
+        field("What", textIn),
+        field("For", assignSeg),
+        h("div",{class:"modal-actions"},
+          h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
+          h("button",{class:"btn primary", text:"Add", onClick:function(){ if(!d.text.trim()) return; addReminder(d.text.trim(), d.assignee); S.modal=null; render(); }})
+        )
+      ));
+  }
+
   function viewToday(){
     var list=choresForDay(TODAY);
     var wrap=h("div",{class:"content"});
+    wrap.appendChild(remindersSection());
     wrap.appendChild(h("div",{class:"section-title", text:"Today · "+DOW_SHORT[TODAY.getDay()]+" "+TODAY.getDate()+" "+MONTHS[TODAY.getMonth()]}));
     if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "No tasks today")); }
     else list.forEach(function(c){ wrap.appendChild(choreCard(c,TODAY)); });
@@ -467,7 +551,7 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” splits the tasks evenly by difficulty. Pin a task (📌) so it stays put."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” deals out the unassigned tasks evenly by difficulty and 🔒 locks each to its person. New tasks start unassigned, ready for the next shuffle. Unlock a task in its settings to put it back in the pool."}));
     wrap.appendChild(rep);
 
     wrap.appendChild(h("div",{class:"section-title", text:"Completed · this week"}));
@@ -548,23 +632,23 @@
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null) d.pinned=false; render(); }, text:(p==null?"Nobody":S.names[p])})); });
     var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"#e3e3ee")+";border-radius:11px;background:"+(d.pinned?"#eef0ff":"#fafaff")+";color:"+(d.pinned?"var(--accent2)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
       onClick:function(){ d.pinned=!d.pinned; render(); },
-      text:(d.pinned?"📌 Pinned to "+S.names[d.assignee]+" (won't shuffle)":"📌 Pin to a person") });
+      text:(d.pinned?"🔒 Locked to "+S.names[d.assignee]+" — tap to unlock (back in shuffle pool)":"🔓 In the shuffle pool — tap to lock to "+S.names[d.assignee]) });
 
     var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn), field("Frequency", freqSeg) ];
-    if(d.freq==="Weekly"){
+    if(d.freq==="Weekly" || d.freq==="Daily"){
       var dp=h("div",{class:"daypick"});
       DOW_SHORT.forEach(function(lbl,idx){
         var dow=(idx); dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
           onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:lbl}));
       });
-      modalBody.push(field("Days", dp));
+      modalBody.push(field(d.freq==="Daily"?"Days (leave empty = every day)":"Days", dp));
     }
     if(d.freq==="Monthly"){
       modalBody.push(field("Day of month", h("input",{type:"number", min:"1", max:"28", value:String(d.dayOfMonth), onInput:function(e){ d.dayOfMonth=parseInt(e.target.value)||1; }})));
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
-    if(d.assignee!=null) modalBody.push(field("Pin", pinBtn));
+    if(d.assignee!=null) modalBody.push(field("Lock", pinBtn));
     modalBody.push(h("div",{class:"modal-actions"},
       h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ editingId=null; S.modal=null; render(); }}),
       h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){
@@ -576,6 +660,7 @@
         target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
         delete target.weekdays; delete target.startDate; delete target.dayOfMonth;
         if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
+        if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
         if(d.freq==="Biweekly") target.startDate=d.startDate;
         if(d.freq==="Monthly") target.dayOfMonth=d.dayOfMonth;
         save(); editingId=null; S.modal=null; render();
@@ -595,22 +680,52 @@
   // ---------- names modal ----------
   var nameDraft;
   function openNames(){ nameDraft=[S.names[0], S.names[1]]; S.modal="names"; render(); }
+  function setDeviceUser(u){ S.deviceUser=u; try{ localStorage.setItem("nh_deviceUser", String(u)); }catch(e){} render(); }
   function modalNames(){
     function field(label,input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
     var in0=h("input",{type:"text", value:nameDraft[0], onInput:function(e){ nameDraft[0]=e.target.value; }});
     var in1=h("input",{type:"text", value:nameDraft[1], onInput:function(e){ nameDraft[1]=e.target.value; }});
+    var deviceSeg=h("div",{class:"seg"});
+    [0,1].forEach(function(p){ deviceSeg.appendChild(h("button",{class:(S.deviceUser===p?"on":""), onClick:function(){ setDeviceUser(p); }, text:S.names[p]})); });
+
+    var children=[ h("h3",{text:"Settings"}),
+      field("Person 1", in0),
+      field("Person 2", in1),
+      field("This phone is used by", deviceSeg),
+      h("div",{class:"modal-actions"},
+        h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
+        h("button",{class:"btn primary", text:"Save names", onClick:function(){
+          S.names=[ (nameDraft[0].trim()||"Person 1"), (nameDraft[1].trim()||"Person 2") ];
+          save(); S.modal=null; render();
+        }})
+      )
+    ];
+
+    // Backup controls are available only on the first person's phone (Nico).
+    if(S.deviceUser===0){
+      var fileIn=h("input",{type:"file", accept:"application/json,.json", style:"display:none;",
+        onChange:function(e){ if(e.target.files && e.target.files[0]) importBackup(e.target.files[0]); }});
+      var backupRow=h("div",{style:"display:flex;gap:10px;margin-top:4px;"},
+        h("button",{ style:"flex:1;padding:11px;border:1.5px solid #e3e3ee;border-radius:11px;background:#fafaff;color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:exportBackup, text:"⬇️ Export" }),
+        h("button",{ style:"flex:1;padding:11px;border:1.5px solid #e3e3ee;border-radius:11px;background:#fafaff;color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:function(){ fileIn.click(); }, text:"⬆️ Import" })
+      );
+      var lastAt=0; try{ lastAt=parseInt(localStorage.getItem("nh_weeklyBackupAt")||"0",10); }catch(e){}
+      var lastTxt = lastAt ? new Date(lastAt).toLocaleDateString() : "not yet";
+      var weeklyRow=h("div",{style:"display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px;background:#fafaff;border:1px solid #eee;border-radius:11px;padding:10px 12px;"},
+        h("div",{style:"font-size:12px;color:var(--muted);font-weight:600;"}, "Auto weekly backup", h("div",{style:"font-weight:700;color:var(--text);margin-top:2px;", text:"Last: "+lastTxt})),
+        h("button",{ style:"border:1.5px solid #e3e3ee;border-radius:10px;background:#fff;color:var(--accent2);font:inherit;font-weight:700;font-size:12.5px;padding:8px 12px;cursor:pointer;white-space:nowrap;", onClick:restoreWeeklySnapshot, text:"Restore" })
+      );
+      children.push(
+        h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+        h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Backup ("+S.names[0]+" only)"}),
+        backupRow,
+        fileIn,
+        h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"Export saves a copy of everything to a file. Import replaces all data from a backup file."}),
+        weeklyRow
+      );
+    }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Names"}),
-        field("Person 1", in0),
-        field("Person 2", in1),
-        h("div",{class:"modal-actions"},
-          h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
-          h("button",{class:"btn primary", text:"Save", onClick:function(){
-            S.names=[ (nameDraft[0].trim()||"Person 1"), (nameDraft[1].trim()||"Person 2") ];
-            save(); S.modal=null; render();
-          }})
-        )
-      ));
+      h("div",{class:"modal"}, children));
   }
 
   // ---------- calendar (.ics) export ----------
@@ -654,19 +769,99 @@
     }catch(e){ alert("Couldn't export the calendar."); }
   }
 
+  // ---------- data backup (export / import) ----------
+  // A one-tap, offline "save a copy" of ALL app data to a JSON file, and a
+  // restore that reads one back. No network — your safety net independent of
+  // any cloud. Keep the file on your phone / Synology.
+  function exportBackup(){
+    try{
+      var data={ app:"our-home", version:1, exportedAt:new Date().toISOString(),
+                 names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders };
+      var blob=new Blob([JSON.stringify(data,null,2)], {type:"application/json;charset=utf-8"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url; a.download="our-home-backup-"+ymd(new Date())+".json";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+    }catch(e){ alert("Couldn't create the backup file."); }
+  }
+  function importBackup(file){
+    var reader=new FileReader();
+    reader.onload=function(){
+      var data;
+      try{ data=JSON.parse(reader.result); }catch(e){ alert("That file isn't a valid backup."); return; }
+      if(!data || !Array.isArray(data.chores)){ alert("That file doesn't look like an Our Home backup."); return; }
+      if(!confirm("Replace ALL current data with this backup? Your current chores, history and reminders will be overwritten. This can't be undone.")) return;
+      S.chores   = data.chores;
+      S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
+      S.doneLog  = (data.doneLog && typeof data.doneLog==="object") ? data.doneLog : {};
+      S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
+      save(); S.modal=null; render();
+      alert("Backup restored.");
+    };
+    reader.onerror=function(){ alert("Couldn't read that file."); };
+    reader.readAsText(file);
+  }
+
+  // ---------- automatic weekly snapshot ----------
+  // Once a week (checked on app open) we save a snapshot of everything into the
+  // app's own storage under a FIXED key, so each new one OVERRIDES the previous.
+  // It's a one-tap rollback point that lives on your phone, fully offline.
+  function takeWeeklySnapshot(){
+    try{
+      var snap={ app:"our-home", version:1, ts:Date.now(),
+                 names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders };
+      localStorage.setItem("nh_weeklySnapshot", JSON.stringify(snap)); // overrides previous
+      localStorage.setItem("nh_weeklyBackupAt", String(snap.ts));
+    }catch(e){}
+  }
+  function maybeWeeklySnapshot(){
+    try{
+      var last=parseInt(localStorage.getItem("nh_weeklyBackupAt")||"0",10);
+      if(!last || (Date.now()-last) >= 7*86400000){ takeWeeklySnapshot(); }
+    }catch(e){}
+  }
+  function restoreWeeklySnapshot(){
+    var raw=null; try{ raw=localStorage.getItem("nh_weeklySnapshot"); }catch(e){}
+    if(!raw){ alert("No weekly backup yet — one is created automatically once a week."); return; }
+    var data=null; try{ data=JSON.parse(raw); }catch(e){}
+    if(!data || !Array.isArray(data.chores)){ alert("The weekly backup looks invalid."); return; }
+    if(!confirm("Restore everything to the weekly backup from "+new Date(data.ts).toLocaleString()+"? Your current data will be overwritten.")) return;
+    S.chores   = data.chores;
+    S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
+    S.doneLog  = (data.doneLog && typeof data.doneLog==="object") ? data.doneLog : {};
+    S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
+    save(); S.modal=null; render();
+    alert("Restored the weekly backup.");
+  }
+
   // ---------- all tasks tab ----------
   function taskRow(c){
     var eff=effortOf(c);
-    return h("div",{class:"card", style:"cursor:pointer", onClick:function(){ openEdit(c); }},
-      h("div",{class:"card-icon", text:c.icon}),
-      h("div",{class:"card-main"},
-        h("div",{class:"card-name", text:(c.pinned?"📌 ":"")+c.name}),
-        h("div",{class:"card-tags"},
-          h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
-          h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
-        )
+    var main=h("div",{class:"card-main"},
+      h("div",{class:"card-name", text:(c.pinned?"🔒 ":"")+c.name}),
+      h("div",{class:"card-tags"},
+        h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
+        h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
+        h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
       ),
+      // When does it happen — always shown in the overview.
+      h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
+        h("span",{text:"📆"}), h("span",{text:scheduleLabel(c)}))
+    );
+    // Quick day-chips: tap to set the day(s) right here, no need to open edit.
+    if(usesWeekdays(c)){
+      var strip=h("div",{class:"daypick", style:"margin-top:8px;"});
+      DOW_SHORT.forEach(function(lbl,dow){
+        var on=(c.weekdays||[]).indexOf(dow)>=0;
+        strip.appendChild(h("button",{class:(on?"on":""), style:"padding:6px 0;font-size:10.5px;",
+          onClick:function(e){ e.stopPropagation(); toggleWeekday(c,dow); }, text:lbl[0]}));
+      });
+      main.appendChild(strip);
+    }
+    return h("div",{class:"card", style:"cursor:pointer;align-items:flex-start;", onClick:function(){ openEdit(c); }},
+      h("div",{class:"card-icon", text:c.icon}),
+      main,
       h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
     );
   }
@@ -689,7 +884,7 @@
     var pct=todays.length? Math.round(done/todays.length*100):0;
     var hd=h("div",{class:"header"},
       h("div",{class:"title"}, "🏠", h("span",{text:"Our Home"})),
-      h("div",{class:"sub", style:"cursor:pointer", text:S.names[0]+" & "+S.names[1]+"  ✏️", onClick:openNames}),
+      h("div",{class:"sub", style:"cursor:pointer", text:S.names[0]+" & "+S.names[1]+"  ⚙️", onClick:openNames}),
       h("div",{class:"progress-wrap"},
         h("div",{class:"progress-top"}, h("span",{text:"Today's progress"}), h("span",{text:done+" of "+todays.length})),
         h("div",{class:"progress-bar"}, h("div",{class:"progress-fill", style:"width:"+pct+"%"}))
@@ -727,8 +922,10 @@
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="names") root.appendChild(modalNames());
+    if(S.modal==="reminder") root.appendChild(modalReminder());
   }
 
+  maybeWeeklySnapshot();
   render();
 })();
 
