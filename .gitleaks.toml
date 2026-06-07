@@ -1,6 +1,15 @@
 # gitleaks configuration for Nuestro Hogar.
-# The app uses no secrets; this scanner runs purely as repo hygiene so a
-# credential can never be committed by accident. Default ruleset, no allowlist.
+# The app uses no real secrets. The ONE allowlisted value below is the Supabase
+# "anon" (public) key — it is designed to be shipped in the client, and access
+# is protected by Row-Level Security. The service_role key and the VAPID private
+# key are NEVER stored in this repo (they live only as Supabase function secrets).
 
 [extend]
 useDefault = true
+
+[allowlist]
+description = "Supabase anon (public) key — safe in the client; data protected by RLS"
+regexTarget = "line"
+regexes = [
+  '''eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9oY3ZkZ3ZzcnZxanp4b3pncGF0''',
+]
