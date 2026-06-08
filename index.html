@@ -433,21 +433,14 @@
   function stateDoc(){ return { v:1, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders }; }
   function applyDoc(d){ if(!d||typeof d!=="object") return; if(Array.isArray(d.chores)) S.chores=d.chores; if(Array.isArray(d.names)&&d.names.length===2) S.names=d.names; if(d.doneLog&&typeof d.doneLog==="object") S.doneLog=d.doneLog; if(Array.isArray(d.reminders)) S.reminders=d.reminders; }
 
-  // Number of consecutive failed token refreshes — only forces a sign-out once we've
-  // seen several in a row, so a single transient 401 (rotation race, brief outage)
-  // doesn't kick the user.
-  var authFailures = 0;
   // Pull the shared document; adopt it if it is newer than what we last synced.
+  // Auth failures never log the user out automatically — the app keeps running on
+  // local data and tries to refresh on the next tick. Only the explicit Sign-out
+  // button in Settings actually clears the session.
   function pullState(){
     if(!isAuthed()) return;
     ensureToken().then(function(ok){
-      if(ok===true){ authFailures = 0; }
-      else if(ok===false){ if(navigator.onLine){ saveSession(null); render(); } return; }
-      else { // "soft-fail" — refresh got rejected; keep the session and try again next pull
-        authFailures++;
-        if(navigator.onLine && authFailures >= 5){ authFailures = 0; saveSession(null); render(); }
-        return;
-      }
+      if(ok!==true) return; // refresh deferred or failed — keep the session, try again next pull
       fetch(SB_URL+"/rest/v1/household_state?id=eq.1&select=data,updated_at", { headers:authHeaders(true) })
         .then(function(r){ return r.ok ? r.json() : []; })
         .then(function(rows){
