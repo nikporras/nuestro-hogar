@@ -299,24 +299,69 @@
       var o0 = S.occurrences[occKey(ch.id, date)];
       if(o0 && o0.tombstone) return false;
     }
-    if(ch.linkedAfter && ch.linkedAfter.taskId){
-      var parent = findChore(ch.linkedAfter.taskId);
-      if(!parent) return false;
-      var n = ch.linkedAfter.days || 1;
-      return isDueDepth(parent, addDays(date, -n), depth + 1);
+    var sch = getSchedule(ch);
+    switch(sch.kind){
+      case "after": {
+        var parent = findChore(sch.parentId);
+        if(!parent) return false;
+        return isDueDepth(parent, addDays(date, -(sch.days||1)), depth + 1);
+      }
+      case "daily":
+        return (sch.days && sch.days.length) ? sch.days.indexOf(date.getDay()) >= 0 : true;
+      case "weekly":
+        return (sch.days || []).indexOf(date.getDay()) >= 0;
+      case "biweekly": {
+        if(!sch.anchor) return false;
+        var sp = String(sch.anchor).split("-");
+        var anchor = new Date(+sp[0], (+sp[1])-1, +sp[2]); anchor.setHours(0,0,0,0);
+        var d2 = new Date(date); d2.setHours(0,0,0,0);
+        var diff = daysBetween(anchor, d2);
+        return diff >= 0 && diff % 14 === 0;
+      }
+      case "monthly_cycle": {
+        if(!sch.anchor) return false;
+        var sp2 = String(sch.anchor).split("-");
+        var anchor2 = new Date(+sp2[0], (+sp2[1])-1, +sp2[2]); anchor2.setHours(0,0,0,0);
+        var d3 = new Date(date); d3.setHours(0,0,0,0);
+        var diff2 = daysBetween(anchor2, d3);
+        return diff2 >= 0 && diff2 % 28 === 0;
+      }
+      case "monthly_dom":
+        return date.getDate() === sch.dayOfMonth;
+      default:
+        return false;
     }
-    switch(ch.freq){
-      case "Daily":     return (ch.weekdays&&ch.weekdays.length) ? ch.weekdays.indexOf(date.getDay())>=0 : true;
-      case "Weekly":    return (ch.weekdays||[]).indexOf(date.getDay())>=0;
-      case "Biweekly":  { var sp=String(ch.startDate).split("-"); var anchor=new Date(+sp[0],(+sp[1])-1,+sp[2]); anchor.setHours(0,0,0,0);
-                          var d2=new Date(date); d2.setHours(0,0,0,0);
-                          var diff=daysBetween(anchor,d2); return diff>=0 && diff%14===0; }
-      case "Monthly":   { if(ch.startDate){ var sp2=String(ch.startDate).split("-"); var anchor2=new Date(+sp2[0],(+sp2[1])-1,+sp2[2]); anchor2.setHours(0,0,0,0);
-                            var d3=new Date(date); d3.setHours(0,0,0,0);
-                            var diff2=daysBetween(anchor2,d3); return diff2>=0 && diff2%28===0; }
-                          return date.getDate()===ch.dayOfMonth; }
-      default: return false;
+  }
+
+  // Returns a discriminated-union schedule for a chore. Reads c.schedule directly
+  // when present (the new shape), otherwise lifts it from the legacy fields
+  // (freq + weekdays / startDate / dayOfMonth, or linkedAfter). Every consumer
+  // (isDue, scheduleLabel, usesWeekdays, scheduleAfterDone) dispatches on
+  // sch.kind so adding a new schedule kind only touches getSchedule + each
+  // consumer's switch.
+  function getSchedule(c){
+    if(c.schedule && c.schedule.kind) return c.schedule;
+    if(c.linkedAfter && c.linkedAfter.taskId){
+      return { kind:"after", parentId: c.linkedAfter.taskId, days: c.linkedAfter.days || 1 };
     }
+    switch(c.freq){
+      case "Daily":    return { kind:"daily",          days: (c.weekdays && c.weekdays.length) ? c.weekdays.slice() : null };
+      case "Weekly":   return { kind:"weekly",         days: c.weekdays || [] };
+      case "Biweekly": return { kind:"biweekly",       anchor: c.startDate || null };
+      case "Monthly":  return c.startDate
+                              ? { kind:"monthly_cycle", anchor: c.startDate }
+                              : { kind:"monthly_dom",   dayOfMonth: c.dayOfMonth || 1 };
+    }
+    return { kind:"none" };
+  }
+  // After-done hook owned by the schedule kind. Returns the action to take, or
+  // null. toggleDone reads this instead of branching on freq itself, so adding a
+  // new cycle-style kind doesn't touch toggleDone.
+  function scheduleAfterDone(c){
+    var sch = getSchedule(c);
+    if(sch.kind === "biweekly")      return { kind:"pickNext", cycleDays: 14 };
+    if(sch.kind === "monthly_cycle") return { kind:"pickNext", cycleDays: 28 };
+    return null;
   }
 
   // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
@@ -326,19 +371,27 @@
   function nextWeekdayYMD(w){ var d=new Date(TODAY); var add=(w - d.getDay() + 7)%7; d.setDate(d.getDate()+add); return ymd(d); }
   // Human-readable "when does this happen" used across the overview & cards.
   function scheduleLabel(c){
-    if(c.linkedAfter && c.linkedAfter.taskId){
-      var parent = findChore(c.linkedAfter.taskId);
-      var n = c.linkedAfter.days || 1;
-      return "After " + (parent ? parent.name : "?") + " · +" + n + " day" + (n>1?"s":"");
+    var sch = getSchedule(c);
+    switch(sch.kind){
+      case "after": {
+        var parent = findChore(sch.parentId);
+        return "After " + (parent ? parent.name : "?") + " · +" + sch.days + " day" + (sch.days>1?"s":"");
+      }
+      case "daily":
+        return sch.days && sch.days.length ? sortedWeekdays(sch.days).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
+      case "weekly":
+        return sch.days && sch.days.length ? sortedWeekdays(sch.days).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
+      case "biweekly":
+        return sch.anchor ? "Every 2 weeks · "+DOW_SHORT[weekdayOfYMD(sch.anchor)] : "Every 2 weeks";
+      case "monthly_cycle":
+        return sch.anchor ? "Every 4 weeks · "+DOW_SHORT[weekdayOfYMD(sch.anchor)] : "Every 4 weeks";
+      case "monthly_dom":
+        return "Day " + sch.dayOfMonth + " each month";
     }
-    if(c.freq==="Daily")    return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
-    if(c.freq==="Weekly")   return (c.weekdays&&c.weekdays.length) ? sortedWeekdays(c.weekdays).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
-    if(c.freq==="Biweekly") return "Every 2 weeks · "+DOW_SHORT[weekdayOfYMD(c.startDate)];
-    if(c.freq==="Monthly")  return c.startDate ? "Every 4 weeks · "+DOW_SHORT[weekdayOfYMD(c.startDate)] : "Day "+c.dayOfMonth+" each month";
     return "";
   }
   // Tasks whose day is a weekday choice (so we can show quick day-chips).
-  function usesWeekdays(c){ return !c.linkedAfter && (c.freq==="Daily" || c.freq==="Weekly"); }
+  function usesWeekdays(c){ var k = getSchedule(c).kind; return k === "daily" || k === "weekly"; }
   function toggleWeekday(c, dow){
     if(!c.weekdays) c.weekdays=[];
     var k=c.weekdays.indexOf(dow);
@@ -787,7 +840,9 @@
       }
     }
     save();
-    if(!wasUnmarking && !ch.linkedAfter && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
+    // The schedule kind decides whether to prompt for the next cycle date.
+    var afterAction = !wasUnmarking ? scheduleAfterDone(ch) : null;
+    if(afterAction && afterAction.kind === "pickNext"){
       openWhenNext(ch, date);
     } else {
       render();
