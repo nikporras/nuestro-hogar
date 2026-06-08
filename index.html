@@ -328,6 +328,7 @@
     rewards: load("nh_rewards", []),
     redemptions: load("nh_redemptions", []),
     badges: load("nh_badges", {}),
+    maxStreaks: load("nh_maxStreaks", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
@@ -364,9 +365,16 @@
     localStorage.setItem("nh_rewards",JSON.stringify(S.rewards));
     localStorage.setItem("nh_redemptions",JSON.stringify(S.redemptions));
     localStorage.setItem("nh_badges",JSON.stringify(S.badges));
+    localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
-  function save(){ ensureOccurrences(); saveLocal(); pushState(); }
+  function save(){
+    ensureOccurrences();
+    updateMaxStreaks();
+    evaluateBadges();
+    saveLocal();
+    pushState();
+  }
 
   // ---------- occurrences (Phase 1 foundation) ----------
   // Each scheduled date of each template gets its own per-occurrence record:
@@ -540,7 +548,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -552,6 +560,7 @@
     if(Array.isArray(d.rewards)) S.rewards=d.rewards;
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
+    if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally.
@@ -718,6 +727,202 @@
       break;                            // a past day with anything undone ends the streak
     }
     return streak;
+  }
+
+  function updateMaxStreaks(){
+    if(!Array.isArray(S.maxStreaks)) S.maxStreaks=[0,0];
+    [0,1].forEach(function(p){
+      var cur = computeStreak(p);
+      if(cur > (S.maxStreaks[p]||0)) S.maxStreaks[p] = cur;
+    });
+  }
+
+  // ---------- couple level (Phase 5) ----------
+  // Lifetime points done by both, fed through level = floor(sqrt(total/25)).
+  // Slow burn: L1 at 25, L5 at 625, L10 at 2,500. No perks attached, just a meter.
+  function totalLifetimePts(){
+    var total = 0;
+    var byId = {};
+    S.chores.forEach(function(c){ byId[c.id]=c; });
+    function addFromKey(key){
+      var dash = key.indexOf("_");
+      if(dash < 0) return;
+      var chId = parseInt(key.slice(0, dash), 10);
+      var c = byId[chId];
+      if(c) total += effortOf(c);
+    }
+    if(S.occurrences){
+      Object.keys(S.occurrences).forEach(function(k){ if(S.occurrences[k] && S.occurrences[k].done) addFromKey(k); });
+    }
+    if(S.doneLog){
+      Object.keys(S.doneLog).forEach(function(k){
+        if(S.occurrences && S.occurrences[k] && S.occurrences[k].done) return; // already counted
+        addFromKey(k);
+      });
+    }
+    return total;
+  }
+  function coupleLevelInfo(){
+    var total = totalLifetimePts();
+    var level = Math.floor(Math.sqrt(total / 25));
+    var nextThreshold = (level + 1) * (level + 1) * 25;
+    return { level: level, total: total, toNext: Math.max(0, nextThreshold - total), nextThreshold: nextThreshold };
+  }
+
+  // ---------- badges (Phase 5) ----------
+  // 50 badges grouped in 5 categories. Definitions are pure data + a predicate over
+  // a single stats blob computed once per evaluation. Unlocked badges are stored
+  // in S.badges as { id: ISO timestamp }.
+  function badgeDefs(){
+    return [
+      // Completion milestones
+      {id:"firstSpark",   cat:"Completion", icon:"🌱", name:"First Spark",   desc:"Your first task done.",            check:function(s){return s.totalDone>=1;}},
+      {id:"routine",      cat:"Completion", icon:"🔁", name:"Routine",       desc:"10 tasks done.",                   check:function(s){return s.totalDone>=10;}},
+      {id:"star",         cat:"Completion", icon:"⭐", name:"Star",          desc:"25 tasks done.",                   check:function(s){return s.totalDone>=25;}},
+      {id:"century",      cat:"Completion", icon:"💯", name:"Century",       desc:"100 tasks done.",                  check:function(s){return s.totalDone>=100;}},
+      {id:"bronzeHands",  cat:"Completion", icon:"🥉", name:"Bronze Hands",  desc:"250 tasks done.",                  check:function(s){return s.totalDone>=250;}},
+      {id:"silverHands",  cat:"Completion", icon:"🥈", name:"Silver Hands",  desc:"500 tasks done.",                  check:function(s){return s.totalDone>=500;}},
+      {id:"goldHands",    cat:"Completion", icon:"🥇", name:"Gold Hands",    desc:"1,000 tasks done.",                check:function(s){return s.totalDone>=1000;}},
+      {id:"diamondHands", cat:"Completion", icon:"💎", name:"Diamond Hands", desc:"2,500 tasks done.",                check:function(s){return s.totalDone>=2500;}},
+      {id:"legend",       cat:"Completion", icon:"🏆", name:"Legend",        desc:"5,000 tasks done.",                check:function(s){return s.totalDone>=5000;}},
+      {id:"mythic",       cat:"Completion", icon:"🌟", name:"Mythic",        desc:"10,000 tasks done.",               check:function(s){return s.totalDone>=10000;}},
+      // Streaks
+      {id:"sparkStreak",  cat:"Streak", icon:"🔥", name:"Spark Streak",   desc:"3-day streak.",   check:function(s){return s.maxStreak>=3;}},
+      {id:"lucky7",       cat:"Streak", icon:"🔥", name:"Lucky 7",        desc:"7-day streak.",   check:function(s){return s.maxStreak>=7;}},
+      {id:"fortnight",    cat:"Streak", icon:"🔥", name:"Fortnight",      desc:"14-day streak.",  check:function(s){return s.maxStreak>=14;}},
+      {id:"monthly",      cat:"Streak", icon:"🔥", name:"Monthly",        desc:"30-day streak.",  check:function(s){return s.maxStreak>=30;}},
+      {id:"hot50",        cat:"Streak", icon:"🔥", name:"Hot 50",         desc:"50-day streak.",  check:function(s){return s.maxStreak>=50;}},
+      {id:"quarter",      cat:"Streak", icon:"🔥", name:"Quarter",        desc:"90-day streak.",  check:function(s){return s.maxStreak>=90;}},
+      {id:"hot100",       cat:"Streak", icon:"🔥", name:"Hot 100",        desc:"100-day streak.", check:function(s){return s.maxStreak>=100;}},
+      {id:"halfYear",     cat:"Streak", icon:"🔥", name:"Half-year",      desc:"180-day streak.", check:function(s){return s.maxStreak>=180;}},
+      {id:"untouchable",  cat:"Streak", icon:"🔥", name:"Untouchable",    desc:"200-day streak.", check:function(s){return s.maxStreak>=200;}},
+      {id:"annual",       cat:"Streak", icon:"🔥", name:"Annual",         desc:"365-day streak.", check:function(s){return s.maxStreak>=365;}},
+      // Effort / difficulty
+      {id:"firstHeavy",   cat:"Effort", icon:"🏋️", name:"First Heavy",   desc:"First difficulty-3 task done.",  check:function(s){return s.byDiff[3]>=1;}},
+      {id:"heavyLifter",  cat:"Effort", icon:"🏋️", name:"Heavy Lifter",  desc:"10 difficulty-3 tasks done.",    check:function(s){return s.byDiff[3]>=10;}},
+      {id:"heavyPro",     cat:"Effort", icon:"🏋️", name:"Heavy Pro",     desc:"50 difficulty-3 tasks done.",    check:function(s){return s.byDiff[3]>=50;}},
+      {id:"heavyMaster",  cat:"Effort", icon:"🏋️", name:"Heavy Master",  desc:"100 difficulty-3 tasks done.",   check:function(s){return s.byDiff[3]>=100;}},
+      {id:"mediumSteady", cat:"Effort", icon:"💪", name:"Medium Steady", desc:"25 difficulty-2 tasks done.",    check:function(s){return s.byDiff[2]>=25;}},
+      {id:"mediumPro",    cat:"Effort", icon:"💪", name:"Medium Pro",    desc:"100 difficulty-2 tasks done.",   check:function(s){return s.byDiff[2]>=100;}},
+      {id:"lightHelper",  cat:"Effort", icon:"🌫️", name:"Light Helper",  desc:"25 difficulty-1 tasks done.",    check:function(s){return s.byDiff[1]>=25;}},
+      {id:"lightSteady",  cat:"Effort", icon:"🌫️", name:"Light Steady",  desc:"100 difficulty-1 tasks done.",   check:function(s){return s.byDiff[1]>=100;}},
+      {id:"tripleThreat", cat:"Effort", icon:"🎯", name:"Triple Threat", desc:"One of each difficulty done in a single day.", check:function(s){return s.tripleThreat;}},
+      {id:"allRounder",   cat:"Effort", icon:"⚖️", name:"All-Rounder",   desc:"5 of each difficulty done overall.", check:function(s){return s.byDiff[1]>=5 && s.byDiff[2]>=5 && s.byDiff[3]>=5;}},
+      // Helping the other
+      {id:"helper",       cat:"Helping", icon:"🤝", name:"Helper",       desc:"First partner-assigned task done.",         check:function(s){return s.helperTotal>=1;}},
+      {id:"steadyHand",   cat:"Helping", icon:"🤝", name:"Steady Hand",  desc:"10 partner tasks done.",                    check:function(s){return s.helperTotal>=10;}},
+      {id:"bestFriend",   cat:"Helping", icon:"🤝", name:"Best Friend",  desc:"25 partner tasks done.",                    check:function(s){return s.helperTotal>=25;}},
+      {id:"soulmate",     cat:"Helping", icon:"🤝", name:"Soulmate",     desc:"100 partner tasks done.",                   check:function(s){return s.helperTotal>=100;}},
+      {id:"generous",     cat:"Helping", icon:"❤️", name:"Generous",     desc:"5 partner tasks in one week.",               check:function(s){return s.helpsInBestWeek>=5;}},
+      {id:"rescue",       cat:"Helping", icon:"🛟", name:"Rescue",       desc:"3 partner tasks in one day.",               check:function(s){return s.helpsInBestDay>=3;}},
+      {id:"giftDay",      cat:"Helping", icon:"🎁", name:"Gift Day",     desc:"Partner task done on a weekend.",           check:function(s){return s.helpedOnWeekend;}},
+      {id:"morningHelper",cat:"Helping", icon:"🍵", name:"Morning Helper",desc:"Partner task done before noon.",            check:function(s){return s.helpedBeforeNoon;}},
+      {id:"nightOwl",     cat:"Helping", icon:"🌙", name:"Night Owl",    desc:"Partner task done after 9 PM.",             check:function(s){return s.helpedAfter9pm;}},
+      {id:"teamPlayer",   cat:"Helping", icon:"🤲", name:"Team Player",  desc:"50% of your done tasks were partner's.",    check:function(s){return s.teamPlayer;}},
+      // Rewards / catalog
+      {id:"firstTreat",   cat:"Rewards", icon:"💸", name:"First Treat",      desc:"First reward redeemed.",            check:function(s){return s.redemptionCount>=1;}},
+      {id:"spender",      cat:"Rewards", icon:"💸", name:"Spender",          desc:"5 redemptions.",                    check:function(s){return s.redemptionCount>=5;}},
+      {id:"bigSpender",   cat:"Rewards", icon:"💸", name:"Big Spender",      desc:"20 redemptions.",                   check:function(s){return s.redemptionCount>=20;}},
+      {id:"catalogStarter",cat:"Rewards",icon:"📚", name:"Catalog Starter",  desc:"Added your first reward.",          check:function(s){return s.catalogCount>=1;}},
+      {id:"catalogBuilder",cat:"Rewards",icon:"📚", name:"Catalog Builder",  desc:"Added 5 rewards.",                  check:function(s){return s.catalogCount>=5;}},
+      {id:"catalogMaster",cat:"Rewards", icon:"📚", name:"Catalog Master",   desc:"Added 20 rewards.",                 check:function(s){return s.catalogCount>=20;}},
+      {id:"generousReward",cat:"Rewards",icon:"💝", name:"Generous Reward", desc:"Added a reward worth over 50 Purrs.",check:function(s){return s.maxRewardCost>50;}},
+      {id:"luckyDay",     cat:"Rewards", icon:"🎰", name:"Lucky Day",        desc:"Earned 20+ Purrs in a single day.", check:function(s){return s.maxDayEarning>=20;}},
+      {id:"saver",        cat:"Rewards", icon:"🏦", name:"Saver",            desc:"Held 100 Purrs in balance.",        check:function(s){return s.maxBalance>=100;}},
+      {id:"treasury",     cat:"Rewards", icon:"🏦", name:"Treasury",         desc:"Held 500 Purrs in balance.",        check:function(s){return s.maxBalance>=500;}}
+    ];
+  }
+
+  function computeBadgeStats(){
+    var s = {
+      totalDone:0, byDiff:{1:0,2:0,3:0},
+      maxStreak: Math.max(S.maxStreaks[0]||0, S.maxStreaks[1]||0),
+      tripleThreat:false,
+      helperTotal:0, helpsInBestWeek:0, helpsInBestDay:0,
+      helpedOnWeekend:false, helpedBeforeNoon:false, helpedAfter9pm:false,
+      teamPlayer:false,
+      redemptionCount: (S.redemptions||[]).length,
+      catalogCount: (S.rewards||[]).length,
+      maxRewardCost: (S.rewards||[]).reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0),
+      maxDayEarning:0,
+      maxBalance: Math.max(S.balances[0]||0, S.balances[1]||0)
+    };
+    var byId = {};
+    S.chores.forEach(function(c){ byId[c.id]=c; });
+    var perDayDiff = {}, perDayEarning = {};
+    var helpsByPerson = [0,0], doneByPerson = [0,0];
+    var perDayHelps = [{},{}], perWeekHelps = [{},{}];
+
+    function record(key, assignee, doneAt){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var chId = parseInt(key.slice(0, dash), 10);
+      var dateStr = key.slice(dash + 1);
+      var c = byId[chId]; if(!c) return;
+      if(assignee !== 0 && assignee !== 1) return;
+      s.totalDone++;
+      doneByPerson[assignee]++;
+      var diff = effortOf(c);
+      if(diff === 1 || diff === 2 || diff === 3) s.byDiff[diff]++;
+      if(!perDayDiff[dateStr]) perDayDiff[dateStr] = {};
+      perDayDiff[dateStr][diff] = true;
+      if(perDayDiff[dateStr][1] && perDayDiff[dateStr][2] && perDayDiff[dateStr][3]) s.tripleThreat = true;
+      perDayEarning[dateStr] = (perDayEarning[dateStr] || 0) + diff;
+      if(perDayEarning[dateStr] > s.maxDayEarning) s.maxDayEarning = perDayEarning[dateStr];
+      // Helping: assignee did a task whose template default is the other person
+      var defAssn = c.assignee;
+      if((defAssn === 0 || defAssn === 1) && defAssn !== assignee){
+        helpsByPerson[assignee]++;
+        var p = dateStr.split("-");
+        var dateObj = new Date(+p[0], (+p[1])-1, +p[2]);
+        perDayHelps[assignee][dateStr] = (perDayHelps[assignee][dateStr]||0) + 1;
+        var wkKey = ymd(startOfWeek(dateObj));
+        perWeekHelps[assignee][wkKey] = (perWeekHelps[assignee][wkKey]||0) + 1;
+        var dow = dateObj.getDay();
+        if(dow === 0 || dow === 6) s.helpedOnWeekend = true;
+        if(doneAt){
+          var dt = new Date(doneAt);
+          if(!isNaN(dt.getTime())){
+            var hr = dt.getHours();
+            if(hr < 12) s.helpedBeforeNoon = true;
+            if(hr >= 21) s.helpedAfter9pm = true;
+          }
+        }
+      }
+    }
+
+    if(S.occurrences){
+      Object.keys(S.occurrences).forEach(function(k){
+        var o = S.occurrences[k];
+        if(o && o.done) record(k, o.assignee, o.doneAt);
+      });
+    }
+    if(S.doneLog){
+      Object.keys(S.doneLog).forEach(function(k){
+        if(S.occurrences && S.occurrences[k] && S.occurrences[k].done) return;
+        record(k, S.doneLog[k], null);
+      });
+    }
+    s.helperTotal = Math.max(helpsByPerson[0], helpsByPerson[1]);
+    [0,1].forEach(function(p){
+      Object.keys(perDayHelps[p]).forEach(function(d){ if(perDayHelps[p][d] > s.helpsInBestDay) s.helpsInBestDay = perDayHelps[p][d]; });
+      Object.keys(perWeekHelps[p]).forEach(function(w){ if(perWeekHelps[p][w] > s.helpsInBestWeek) s.helpsInBestWeek = perWeekHelps[p][w]; });
+      if(doneByPerson[p] > 0 && helpsByPerson[p] / doneByPerson[p] >= 0.5) s.teamPlayer = true;
+    });
+    return s;
+  }
+
+  // Called from save(); checks every badge predicate, records the unlock instant.
+  function evaluateBadges(){
+    if(!S.badges) S.badges = {};
+    var stats = computeBadgeStats();
+    var defs = badgeDefs();
+    var now = new Date().toISOString();
+    var newlyUnlocked = [];
+    defs.forEach(function(b){
+      if(S.badges[b.id]) return;
+      if(b.check(stats)){ S.badges[b.id] = now; newlyUnlocked.push(b); }
+    });
+    return newlyUnlocked;
   }
 
   function choresForDay(date){
@@ -1070,11 +1275,15 @@
     var total=counts[0]+counts[1];
     var leader = counts[0]===counts[1] ? -1 : (counts[0]>counts[1]?0:1);
 
-    // trophy
+    // trophy + couple level
     var trophy=h("div",{class:"trophy"});
     if(total===0){ trophy.appendChild(h("span",{class:"big",text:"🌱"})); trophy.appendChild(document.createTextNode("Nothing done yet")); }
     else if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("Tie! "+counts[0]+" – "+counts[1])); }
     else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" is ahead")); }
+    var lvl = coupleLevelInfo();
+    trophy.appendChild(h("div",{style:"margin-top:8px;font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.04em;",
+      text:"Home · Level "+lvl.level+(lvl.level<999 ? " · "+lvl.toNext+" pts to L"+(lvl.level+1) : "")
+    }));
 
     var card=h("div",{class:"vs-card"}, trophy);
     [0,1].forEach(function(p){
@@ -1158,6 +1367,24 @@
       wrap.appendChild(logCard);
     }
 
+    // ---------- Badges (Phase 5) ----------
+    var defs = badgeDefs();
+    var unlockedCount = 0;
+    defs.forEach(function(b){ if(S.badges[b.id]) unlockedCount++; });
+    wrap.appendChild(h("div",{class:"section-title", text:"Badges  ("+unlockedCount+" / "+defs.length+")"}));
+    var bCard = h("div",{class:"vs-card", style:"padding:14px 12px;"});
+    var grid = h("div",{style:"display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"});
+    defs.forEach(function(b){
+      var got = !!S.badges[b.id];
+      var cell = h("div",{style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";", onClick:function(){ openBadge(b); }},
+        h("div",{style:"font-size:30px;filter:"+(got?"none":"grayscale(0.6)"), text:got ? b.icon : "🔒"}),
+        h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:2px;line-height:1.2;", text:got ? b.name : "Locked"})
+      );
+      grid.appendChild(cell);
+    });
+    bCard.appendChild(grid);
+    wrap.appendChild(bCard);
+
     // "Meet the Olympaws" — small decorative card; each cat is a popup voice elsewhere.
     wrap.appendChild(h("div",{class:"section-title", text:"Meet the Olympaws"}));
     var catsCard=h("div",{class:"vs-card", style:"padding:16px 12px;"});
@@ -1217,6 +1444,27 @@
     }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; rewardEditing=null; render(); } }},
       h("div",{class:"modal"}, children));
+  }
+
+  // ---------- badge detail modal ----------
+  var badgeView = null;
+  function openBadge(b){ badgeView = b; S.modal = "badge"; render(); }
+  function modalBadge(){
+    if(!badgeView) return h("div");
+    var b = badgeView;
+    var got = S.badges[b.id];
+    var unlockedAt = got ? formatWhen(got) : null;
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; badgeView=null; render(); } }},
+      h("div",{class:"modal", style:"text-align:center;padding:26px 18px 30px;"},
+        h("div",{style:"font-size:74px;opacity:"+(got?"1":"0.4")+";filter:"+(got?"none":"grayscale(0.6)")+";", text:got ? b.icon : "🔒"}),
+        h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: got ? b.name : "Locked"}),
+        h("div",{style:"color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.16em;font-weight:700;margin-bottom:8px;", text:b.cat}),
+        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:10px;", text:b.desc}),
+        got
+          ? h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Unlocked "+unlockedAt})
+          : h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Not yet unlocked"}),
+        h("button",{class:"btn ghost", style:"width:60%;margin:0 auto;display:block;", onClick:function(){ S.modal=null; badgeView=null; render(); }, text:"Close"})
+      ));
   }
 
   // Shared cat metadata — used by the "Meet the Olympaws" card AND the zoom modal.
@@ -1683,6 +1931,7 @@
     if(S.modal==="calexport") root.appendChild(modalCalExport());
     if(S.modal==="cat") root.appendChild(modalCat());
     if(S.modal==="reward") root.appendChild(modalReward());
+    if(S.modal==="badge") root.appendChild(modalBadge());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
@@ -1690,6 +1939,8 @@
   maybeWeeklySnapshot();
   ensureOccurrences();
   migrateBalancesOnce();
+  updateMaxStreaks();
+  evaluateBadges();
   render();
   if(isAuthed()) pullState();
   setInterval(function(){ if(isAuthed() && document.visibilityState!=="hidden") pullState(); }, 10000);
