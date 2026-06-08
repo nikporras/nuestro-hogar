@@ -480,10 +480,10 @@
     var p = S.deviceUser;
     if(p !== 0 && p !== 1) p = 0; // safety default
     if(S.balances[p] < r.cost){
-      alert(S.names[p] + " has " + S.balances[p] + " Purrs but needs " + r.cost + ".");
+      alert(S.names[p] + " has " + S.balances[p] + " Purrs but needs " + r.cost + ". (If this phone is the wrong person, change it in Settings → This phone is used by.)");
       return;
     }
-    if(!confirm("Redeem '" + r.name + "' for " + r.cost + " Purrs? " + S.names[p] + " will have " + (S.balances[p] - r.cost) + " left.")) return;
+    if(!confirm("Redeeming as "+S.names[p]+". Spend "+r.cost+" Purrs on '"+r.name+"'? "+S.names[p]+" will have "+(S.balances[p]-r.cost)+" left.")) return;
     S.balances[p] -= r.cost;
     S.redemptions.push({
       id: Date.now(),
@@ -726,29 +726,22 @@
   }
   function toggleDone(ch, date){
     var o = ensureOcc(ch, date);
-    var key = occKey(ch.id, date);
     var pts = effortOf(ch);
     var wasUnmarking = !!o.done;
     if(o.done){
       // Unmark: refund the credited person.
       if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
       o.done = false; o.doneAt = null;
-      if(S.doneLog) delete S.doneLog[key];
     } else {
       // Mark done: credit the assignee + drop the lock.
       o.done = true;
       o.doneAt = new Date().toISOString();
       o.pinned = false;
-      if(o.assignee === 0 || o.assignee === 1){
-        S.balances[o.assignee] += pts;
-        if(!S.doneLog) S.doneLog = {};
-        S.doneLog[key] = o.assignee;
-      }
+      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] += pts;
     }
+    // doneLog is read-only legacy: it carries pre-Phase-1 history for dates outside
+    // the materialised window. New completions live entirely on the occurrence.
     save();
-    // After completing a cycle-style chore, ask which day to schedule the next one.
-    // Linked chores inherit their schedule from a parent, so their own freq is moot —
-    // never prompt for them (the parent's completion is what owns the cycle).
     if(!wasUnmarking && !ch.linkedAfter && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
       openWhenNext(ch, date);
     } else {
@@ -763,12 +756,7 @@
       // Transfer the credit when an already-done occurrence is re-assigned.
       var pts = effortOf(ch);
       if(prev === 0 || prev === 1) S.balances[prev] -= pts;
-      if(o.assignee === 0 || o.assignee === 1){
-        S.balances[o.assignee] += pts;
-        S.doneLog[occKey(ch.id, date)] = o.assignee;
-      } else {
-        delete S.doneLog[occKey(ch.id, date)];
-      }
+      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] += pts;
     }
     save(); render();
   }
@@ -937,12 +925,17 @@
     var perDayHelps = [{},{}], perWeekHelps = [{},{}];
 
     var baseline = S.badgeBaselineDate || "";
+    var todayStr = ymd(TODAY);
     function record(key, assignee, doneAt){
       var dash = key.indexOf("_"); if(dash < 0) return;
       var chId = parseInt(key.slice(0, dash), 10);
       var dateStr = key.slice(dash + 1);
       // After a badge reset, only count completions on or after the baseline date.
       if(baseline && dateStr < baseline) return;
+      // Don't credit completions scheduled in the future — the wizard can place a
+      // task on next Saturday and the user could tap it done from the day-nav
+      // ahead of time, which would inflate maxDayEarning / tripleThreat windows.
+      if(dateStr > todayStr) return;
       var c = byId[chId]; if(!c) return;
       if(assignee !== 0 && assignee !== 1) return;
       s.totalDone++;
@@ -1086,7 +1079,18 @@
         });
       }
     });
-    wizardDraft = { rows: rows, weekStart: weekStart, weekEnd: weekEnd, rangeStart: rangeStart };
+    // Index children by parent id so cascade-on-date-pick is O(children) instead of
+    // O(rows) per click. Built once because the parent/child graph is fixed for the
+    // life of this wizard session.
+    var childrenByParent = {};
+    rows.forEach(function(r){
+      var la = r.chore.linkedAfter;
+      if(!la || !la.taskId) return;
+      var pid = String(la.taskId);
+      if(!childrenByParent[pid]) childrenByParent[pid] = [];
+      childrenByParent[pid].push(r);
+    });
+    wizardDraft = { rows: rows, weekStart: weekStart, weekEnd: weekEnd, rangeStart: rangeStart, childrenByParent: childrenByParent };
     S.modal = "wizard"; render();
   }
 
@@ -1131,13 +1135,14 @@
   }
 
   // When the user picks a day for a parent in the wizard, drag any unedited
-  // dependent rows along by their N-day offset.
+  // dependent rows along by their N-day offset. Looks up children from the
+  // index built at openWizard time.
   function cascadeWizardDate(parentChoreId, newParentDate){
     if(!wizardDraft) return;
-    wizardDraft.rows.forEach(function(row){
-      var la = row.chore.linkedAfter;
-      if(!la || la.taskId !== parentChoreId) return;
+    var children = (wizardDraft.childrenByParent && wizardDraft.childrenByParent[String(parentChoreId)]) || [];
+    children.forEach(function(row){
       if(row.edited) return; // soft link — user override sticks
+      var la = row.chore.linkedAfter;
       row.date = addDays(newParentDate, la.days || 1);
     });
   }
