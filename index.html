@@ -1315,23 +1315,29 @@
 
   // Wipes every per-occurrence record (assignments, locks, tombstones, done-marks).
   // Templates, doneLog history, balances, rewards, badges, streaks, and reminders
-  // are untouched. Tombstones every current+next-period natural-due date so the
-  // board renders completely empty — the next wizard pass clears the tombstones
+  // are untouched. Tombstones every natural-due date from the start of THIS week
+  // out through +180 days so every view (week strip, month calendar, day-nav)
+  // renders empty — except dates that already have a real done record in doneLog,
+  // so completed history stays visible. The next wizard pass clears tombstones
   // in its range (saveWizard step 1) and re-tombstones whatever the user skips.
   function clearAllOccurrences(){
-    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped from this week through the next 6 months — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
     S.occurrences = {};
     invalidateBadgeStats();
     // Two-pass: collect natural-due (chore, date) pairs BEFORE writing any
     // tombstones — otherwise a parent's fresh tombstone would suppress a
-    // dependent's cascading isDue read and we'd miss it.
-    var keys = [];
+    // dependent's cascading isDue read and we'd miss it. Skip dates that have
+    // a real completion in doneLog so ensureOccurrences can re-materialise
+    // them as done.
+    var start = startOfWeek(TODAY);
+    var end   = addDays(TODAY, 180);
+    var keys  = [];
     S.chores.forEach(function(c){
-      var ranges = periodRanges(c);
-      if(!ranges) return;
-      for(var d = new Date(ranges.current.start); d <= ranges.next.end; d = addDays(d, 1)){
+      for(var d = new Date(start); d <= end; d = addDays(d, 1)){
         if(!isDue(c, d)) continue;
-        keys.push(occKey(c.id, d));
+        var k = occKey(c.id, d);
+        if(S.doneLog && (S.doneLog[k] === 0 || S.doneLog[k] === 1)) continue;
+        keys.push(k);
       }
     });
     keys.forEach(function(k){ S.occurrences[k] = { tombstone: true }; });
