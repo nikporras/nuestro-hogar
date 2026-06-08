@@ -10,7 +10,7 @@
  *  - Non-GET requests are never touched.
  */
 
-const CACHE = "nuestro-hogar-v39";
+const CACHE = "nuestro-hogar-v40";
 
 // The app shell. Keep this list explicit — only known static assets.
 const SHELL = [
@@ -74,8 +74,8 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; }
-  catch (e) { data = { title: "Our Home", body: event.data ? event.data.text() : "" }; }
-  const title = data.title || "Our Home";
+  catch (e) { data = { title: "Olympaws", body: event.data ? event.data.text() : "" }; }
+  const title = data.title || "Olympaws";
   const options = {
     body: data.body || "",
     icon: "./icons/icon-192.png",

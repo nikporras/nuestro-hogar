@@ -8,7 +8,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https://ohcvdgvsrvqjzxozgpat.supabase.co; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-<title>Our Home</title>
+<title>Olympaws</title>
 <style>
   :root{
     --accent1:#667eea; --accent2:#764ba2;
@@ -592,7 +592,7 @@
   function viewLogin(){
     var wrap=h("div",{style:"max-width:420px;margin:0 auto;padding:54px 24px;text-align:center;"});
     wrap.appendChild(h("div",{style:"font-size:54px;",text:"🏠"}));
-    wrap.appendChild(h("div",{style:"font-size:24px;font-weight:800;margin:6px 0 2px;",text:"Our Home"}));
+    wrap.appendChild(h("div",{style:"font-size:24px;font-weight:800;margin:6px 0 2px;",text:"Olympaws"}));
     wrap.appendChild(h("div",{style:"color:var(--muted);margin-bottom:26px;",text:"Sign in to sync with your partner"}));
     if(loginStage==="code"){
       var codeIn=h("input",{type:"text", inputmode:"numeric", autocomplete:"one-time-code", maxlength:"8", placeholder:"Code from email", value:loginCode,
@@ -1414,7 +1414,7 @@
   function icsEscape(s){ return String(s).replace(/([\\;,])/g,"\\$1").replace(/\n/g,"\\n"); }
   function buildICS(filter){
     var stamp=icsStampUTC();
-    var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Our Home//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Our Home"];
+    var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Olympaws//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Olympaws"];
     // One-off (non-recurring) all-day events for the next 8 days, computed with
     // the app's own isDue() so they match exactly what the app shows. Re-export
     // each week to get the next week — and to reflect the latest Shuffle.
@@ -1483,7 +1483,7 @@
     reader.onload=function(){
       var data;
       try{ data=JSON.parse(reader.result); }catch(e){ alert("That file isn't a valid backup."); return; }
-      if(!data || !Array.isArray(data.chores)){ alert("That file doesn't look like an Our Home backup."); return; }
+      if(!data || !Array.isArray(data.chores)){ alert("That file doesn't look like an Olympaws backup."); return; }
       if(!confirm("Replace ALL current data with this backup? Your current chores, history and reminders will be overwritten. This can't be undone.")) return;
       S.chores   = data.chores;
       S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
@@ -1612,7 +1612,7 @@
     var done=todays.filter(function(c){return isDone(c,TODAY);}).length;
     var pct=todays.length? Math.round(done/todays.length*100):0;
     var hd=h("div",{class:"header"},
-      h("div",{class:"title"}, "🏠", h("span",{text:"Our Home"})),
+      h("div",{class:"title"}, "🐾", h("span",{text:"Olympaws"})),
       h("div",{class:"sub", style:"cursor:pointer", text:S.names[0]+" & "+S.names[1]+"  ⚙️", onClick:openNames}),
       h("div",{class:"progress-wrap"},
         h("div",{class:"progress-top"}, h("span",{text:"Today's progress"}), h("span",{text:done+" of "+todays.length})),
