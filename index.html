@@ -1629,6 +1629,12 @@
     if(!wizardDraft) return;
     // Step 1: drop every existing undone occurrence for any chore the wizard
     // covered in the planning range, so we can lay down the new plan cleanly.
+    // Outside the weekly range we ALSO clear pinned occurrences, because pass 2
+    // can put first-occurrence pins beyond this week (biweekly anchor next
+    // week, cascaded "after" child, etc.); without this, the prior shuffle's
+    // beyond-week pin survived alongside the new one and assignedPoints
+    // double-counted the chore. Non-pinned beyond-week occurrences (next-
+    // period null cards) are left alone — they're not wizard-owned.
     var touchedChores = {};
     wizardDraft.rows.forEach(function(r){ touchedChores[String(r.chore.id)] = r.chore; });
     var fromKey = ymd(wizardDraft.rangeStart), toKey = ymd(wizardDraft.weekEnd);
@@ -1636,9 +1642,13 @@
       var under = key.indexOf("_"); if(under < 0) return;
       if(!touchedChores[key.slice(0, under)]) return;
       var dStr = key.slice(under + 1);
-      if(dStr < fromKey || dStr > toKey) return;
       var o = S.occurrences[key];
-      if(o && !o.done) delete S.occurrences[key];
+      if(!o || o.done) return;
+      if(dStr >= fromKey && dStr <= toKey){
+        delete S.occurrences[key]; // in-week: clear all undone for a clean slate
+      } else if(o.pinned){
+        delete S.occurrences[key]; // beyond-week: clear prior wizard pins only
+      }
     });
     // Step 2: build the set of (chore, date) the user chose for fast lookup.
     var chosen = {};
