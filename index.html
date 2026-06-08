@@ -405,25 +405,49 @@
   }
   function signOut(){ saveSession(null); lastSyncedAt=0; loginMsg=""; loginStage="email"; loginCode=""; render(); }
 
-  // Refresh the access token if it is close to expiring.
+  // Refresh the access token if it's close to expiring. Concurrent callers (the 10s
+  // pull, visibilitychange, and online events all fire when the app wakes up) share a
+  // single in-flight refresh — Supabase rotates the refresh token on each use, so
+  // letting two requests race would invalidate one and kick the user out.
+  var refreshInFlight = null;
   function ensureToken(){
     if(!SESSION || !SESSION.access_token) return Promise.resolve(false);
-    if(Date.now() < (SESSION.expires_at||0) - 60000) return Promise.resolve(true);
+    // Refresh when there are fewer than 5 minutes left, not 60 seconds, so the wake-up
+    // burst of pulls doesn't all hit the refresh endpoint at once.
+    if(Date.now() < (SESSION.expires_at||0) - 5*60*1000) return Promise.resolve(true);
     if(!SESSION.refresh_token) return Promise.resolve(true);
-    return fetch(SB_URL+"/auth/v1/token?grant_type=refresh_token", { method:"POST", headers:authHeaders(false), body:JSON.stringify({ refresh_token:SESSION.refresh_token }) })
+    if(refreshInFlight) return refreshInFlight;
+    refreshInFlight = fetch(SB_URL+"/auth/v1/token?grant_type=refresh_token", { method:"POST", headers:authHeaders(false), body:JSON.stringify({ refresh_token:SESSION.refresh_token }) })
       .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(j){ if(j && j.access_token){ var pay=jwtPayload(j.access_token); saveSession({ access_token:j.access_token, refresh_token:j.refresh_token||SESSION.refresh_token, expires_at:Date.now()+((j.expires_in||3600)*1000), email:(pay.email||SESSION.email||"").toLowerCase(), user_id:pay.sub||SESSION.user_id }); return true; } return false; })
-      .catch(function(){ return true; });
+      .then(function(j){
+        refreshInFlight = null;
+        if(j && j.access_token){ var pay=jwtPayload(j.access_token); saveSession({ access_token:j.access_token, refresh_token:j.refresh_token||SESSION.refresh_token, expires_at:Date.now()+((j.expires_in||3600)*1000), email:(pay.email||SESSION.email||"").toLowerCase(), user_id:pay.sub||SESSION.user_id }); return true; }
+        // Refresh got rejected — keep the (likely stale) session and let pullState try
+        // again next tick. Real sign-out only happens after several consecutive failures.
+        return "soft-fail";
+      })
+      .catch(function(){ refreshInFlight = null; return true; });
+    return refreshInFlight;
   }
 
   function stateDoc(){ return { v:1, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders }; }
   function applyDoc(d){ if(!d||typeof d!=="object") return; if(Array.isArray(d.chores)) S.chores=d.chores; if(Array.isArray(d.names)&&d.names.length===2) S.names=d.names; if(d.doneLog&&typeof d.doneLog==="object") S.doneLog=d.doneLog; if(Array.isArray(d.reminders)) S.reminders=d.reminders; }
 
+  // Number of consecutive failed token refreshes — only forces a sign-out once we've
+  // seen several in a row, so a single transient 401 (rotation race, brief outage)
+  // doesn't kick the user.
+  var authFailures = 0;
   // Pull the shared document; adopt it if it is newer than what we last synced.
   function pullState(){
     if(!isAuthed()) return;
     ensureToken().then(function(ok){
-      if(!ok){ if(navigator.onLine){ saveSession(null); render(); } return; }
+      if(ok===true){ authFailures = 0; }
+      else if(ok===false){ if(navigator.onLine){ saveSession(null); render(); } return; }
+      else { // "soft-fail" — refresh got rejected; keep the session and try again next pull
+        authFailures++;
+        if(navigator.onLine && authFailures >= 5){ authFailures = 0; saveSession(null); render(); }
+        return;
+      }
       fetch(SB_URL+"/rest/v1/household_state?id=eq.1&select=data,updated_at", { headers:authHeaders(true) })
         .then(function(r){ return r.ok ? r.json() : []; })
         .then(function(rows){
@@ -438,7 +462,7 @@
   function pushNow(){
     if(!isAuthed()) return;
     ensureToken().then(function(ok){
-      if(!ok) return;
+      if(ok!==true) return;
       var now=new Date().toISOString();
       var hh=authHeaders(true); hh["Prefer"]="return=minimal";
       fetch(SB_URL+"/rest/v1/household_state?id=eq.1", { method:"PATCH", headers:hh, body:JSON.stringify({ data:stateDoc(), updated_at:now, updated_by:myEmail() }) })
