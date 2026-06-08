@@ -1851,11 +1851,16 @@
           var due=S.chores.filter(function(c){return showsOnDay(c,day);});
           if(due.length){
             var dots=h("div",{class:"dots"});
+            // After "Start fresh" the user expects pre-clear history to vanish
+            // from the calendar even though doneLog still drives streaks/badges.
+            // Suppress grey "done" dots for days before the cleared moment.
+            var hideHistoryDot = !!(S.scheduleClearedAt && ymd(day) < S.scheduleClearedAt.slice(0,10));
             due.slice(0,4).forEach(function(c){
               var done=isDone(c,day);
+              if(done && hideHistoryDot) return;
               dots.appendChild(h("div",{class:"mdot", style:"background:"+(done?"#cfcfda":FC[c.freq])}));
             });
-            cell.appendChild(dots);
+            if(dots.children && dots.children.length) cell.appendChild(dots);
           }
         }
         grid.appendChild(cell);
