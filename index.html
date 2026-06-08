@@ -600,7 +600,7 @@
 
   function viewLogin(){
     var wrap=h("div",{style:"max-width:420px;margin:0 auto;padding:54px 24px;text-align:center;"});
-    wrap.appendChild(h("div",{style:"font-size:54px;",text:"🏠"}));
+    wrap.appendChild(h("div",{style:"font-size:54px;",text:"🐾"}));
     wrap.appendChild(h("div",{style:"font-size:24px;font-weight:800;margin:6px 0 2px;",text:"Olympaws"}));
     wrap.appendChild(h("div",{style:"color:var(--muted);margin-bottom:26px;",text:"Sign in to sync with your partner"}));
     if(loginStage==="code"){
@@ -667,6 +667,7 @@
     var o = ensureOcc(ch, date);
     var key = occKey(ch.id, date);
     var pts = effortOf(ch);
+    var wasUnmarking = !!o.done;
     if(o.done){
       // Unmark: refund the credited person.
       if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
@@ -683,7 +684,13 @@
         S.doneLog[key] = o.assignee;
       }
     }
-    save(); render();
+    save();
+    // After completing a cycle-style chore, ask which day to schedule the next one.
+    if(!wasUnmarking && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
+      openWhenNext(ch, date);
+    } else {
+      render();
+    }
   }
   function cycleOccAssignee(ch, date){
     var o = ensureOcc(ch, date);
@@ -1455,6 +1462,64 @@
       h("div",{class:"modal"}, children));
   }
 
+  // ---------- "When next?" picker for Biweekly / cycle-Monthly (Phase 6) ----------
+  var whenNextCtx = null;
+  function openWhenNext(ch, doneDate){
+    whenNextCtx = { chore: ch, doneDate: new Date(doneDate) };
+    S.modal = "whenNext"; render();
+  }
+  function closeWhenNext(){ whenNextCtx = null; S.modal = null; render(); }
+  function modalWhenNext(){
+    if(!whenNextCtx) return h("div");
+    var ch = whenNextCtx.chore;
+    var doneDate = whenNextCtx.doneDate;
+    var cycleDays = ch.freq === "Biweekly" ? 14 : 28;
+    var label = ch.freq === "Biweekly" ? "Next one in 2 weeks" : "Next one in 4 weeks";
+    var weekStart = startOfWeek(addDays(doneDate, cycleDays));
+    var defaultDay = addDays(doneDate, cycleDays);
+
+    function pick(date){
+      // Wipe future undone occurrences for this chore so the new schedule takes hold.
+      var todayKey = ymd(TODAY);
+      Object.keys(S.occurrences).forEach(function(key){
+        if(key.indexOf(String(ch.id) + "_") !== 0) return;
+        var dStr = key.slice(String(ch.id).length + 1);
+        if(dStr <= todayKey) return;
+        if(!S.occurrences[key].done) delete S.occurrences[key];
+      });
+      ch.startDate = ymd(date);
+      if(ch.freq === "Monthly") delete ch.dayOfMonth;
+      save();
+      closeWhenNext();
+    }
+
+    var dayRow = h("div",{style:"display:flex;gap:6px;"});
+    for(var i = 0; i < 7; i++){
+      (function(){
+        var d = addDays(weekStart, i);
+        var isDefault = sameDay(d, defaultDay);
+        var btn = h("button",{
+          style:"flex:1;padding:9px 4px;border:1.5px solid "+(isDefault?"var(--accent1)":"var(--border)")+";border-radius:11px;background:"+(isDefault?"var(--soft-accent)":"var(--input-bg)")+";color:"+(isDefault?"var(--soft-accent-text)":"var(--text)")+";font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;",
+          onClick:function(){ pick(d); }
+        },
+          h("span",{style:"font-size:10.5px;color:var(--muted);font-weight:700;text-transform:uppercase;", text: DOW_SHORT[d.getDay()].slice(0,2)}),
+          h("span",{style:"font-size:17px;font-weight:800;", text: String(d.getDate())})
+        );
+        dayRow.appendChild(btn);
+      })();
+    }
+
+    var monthLine = MONTHS[weekStart.getMonth()] + (weekStart.getMonth() !== addDays(weekStart,6).getMonth() ? " – " + MONTHS[addDays(weekStart,6).getMonth()] : "") + " " + weekStart.getFullYear();
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeWhenNext(); } }},
+      h("div",{class:"modal", style:"padding:22px 18px 26px;"},
+        h("h3",{style:"margin:0 0 4px;font-size:18px;text-align:center;", text:label}),
+        h("div",{style:"color:var(--muted);font-size:12.5px;margin-bottom:4px;text-align:center;", text:"Pick which day for " + ch.name}),
+        h("div",{style:"color:var(--muted);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px;text-align:center;", text: monthLine}),
+        dayRow,
+        h("button",{class:"btn ghost", style:"width:100%;margin-top:16px;", onClick: closeWhenNext, text: "Skip — use default"})
+      ));
+  }
+
   // ---------- badge detail modal ----------
   var badgeView = null;
   function openBadge(b){ badgeView = b; S.modal = "badge"; render(); }
@@ -1941,6 +2006,7 @@
     if(S.modal==="cat") root.appendChild(modalCat());
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
+    if(S.modal==="whenNext") root.appendChild(modalWhenNext());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
