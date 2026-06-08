@@ -1484,11 +1484,24 @@
     // Build the list of valid days in the planning range.
     var days = [];
     for(var d=new Date(wizardDraft.rangeStart); d<=wizardDraft.weekEnd; d=addDays(d,1)) days.push(new Date(d));
+    // Track which day-indexes each chore has already claimed so two rows of the
+    // same daily chore don't both land on the same date (step 4 would silently
+    // overwrite one). When all slots are taken we fall back to last-write-wins.
+    var perChoreSlots = {};
     nonDeps.forEach(function(row, i){
       var who = totals[0] <= totals[1] ? 0 : 1;
       row.assignee = who;
       totals[who] += effortOf(row.chore);
-      row.date = days[i % days.length];
+      var cid = String(row.chore.id);
+      if(!perChoreSlots[cid]) perChoreSlots[cid] = {};
+      var start = i % days.length;
+      var picked = start;
+      for(var step = 0; step < days.length; step++){
+        var idx = (start + step) % days.length;
+        if(!perChoreSlots[cid][idx]){ picked = idx; break; }
+      }
+      perChoreSlots[cid][picked] = true;
+      row.date = days[picked];
     });
     // Dependents inherit their parent's day + N, and pick up the parent's person so
     // the same hands that washed do the folding.
@@ -2196,6 +2209,15 @@
           })();
         }
         row.appendChild(dayPick);
+        // Cascade can push a child past Sunday; the 7 day-buttons can't
+        // represent that, so call it out so the row doesn't look "blank".
+        if(r.date < weekStart || r.date > weekEnd){
+          var outLabel = DOW_SHORT[r.date.getDay()] + " " + MONTHS[r.date.getMonth()].slice(0,3) + " " + r.date.getDate();
+          row.appendChild(h("div",{
+            style:"font-size:11px;color:var(--accent2);font-weight:700;text-align:center;margin:0 0 8px;",
+            text:"↳ Lands " + outLabel + " (next week)"
+          }));
+        }
         // Person picker
         var personPick = h("div",{style:"display:flex;gap:6px;"});
         [null, 0, 1].forEach(function(p){
