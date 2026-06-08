@@ -507,6 +507,18 @@
   function occKey(choreId, date){ return choreId+"_"+ymd(date); }
   // One-shot: seed Purr balances from historical doneLog the first time this build
   // runs, so users who've been completing tasks for weeks don't start at zero.
+  // Run on every load: a negative balance can't exist by current rules, but it
+  // can be left over from earlier toggleDone-after-redeem sequences. Clamp once
+  // so the doc heals itself and a synced partner phone picks up the fix too.
+  function clampBalances(){
+    if(!Array.isArray(S.balances) || S.balances.length !== 2) return;
+    var changed = false;
+    [0,1].forEach(function(p){
+      var v = S.balances[p]||0;
+      if(v < 0){ S.balances[p] = 0; changed = true; }
+    });
+    return changed;
+  }
   function migrateBalancesOnce(){
     if(S.balancesMigratedAt) return;
     if(!S.doneLog || !S.chores) { S.balancesMigratedAt = Date.now(); return; }
@@ -737,6 +749,7 @@
     // (streak personal bests, badge unlocks) so the partner's work shows on this
     // phone immediately instead of waiting for the next local save().
     ensureOccurrences();
+    clampBalances(); // a partner on an older build can push a negative balance — fix on receive.
     invalidateBadgeStats(); // remote may have new completions — cache is stale
     updateMaxStreaks();
     evaluateBadges();
@@ -845,7 +858,12 @@
     var prevAssignee = o.assignee;
     var prevDoneAt = o.doneAt;
     if(o.done){
-      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
+      // Unmark: refund as much of the credit as the current balance can give back —
+      // never let a balance go negative even when the user has already spent past
+      // earnings on rewards.
+      if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] = Math.max(0, (S.balances[o.assignee]||0) - pts);
+      }
       o.done = false; o.doneAt = null;
       if(prevAssignee === 0 || prevAssignee === 1){
         // Pass the old doneAt so the cache decrement matches the original
@@ -878,13 +896,14 @@
       var pts = effortOf(ch);
       // Model the re-assignment as undo-on-old + redo-on-new so the cache stays
       // accurate without a dedicated reassign code path. Pass o.doneAt so the
-      // baseline filter is consistent across both events.
+      // baseline filter is consistent across both events. Clamp the refund at 0
+      // so partial-spending doesn't take a balance negative.
       if(prev === 0 || prev === 1){
-        S.balances[prev] -= pts;
+        S.balances[prev] = Math.max(0, (S.balances[prev]||0) - pts);
         recordEvent("task_undone", { chore: ch, date: date, assignee: prev, doneAt: o.doneAt });
       }
       if(o.assignee === 0 || o.assignee === 1){
-        S.balances[o.assignee] += pts;
+        S.balances[o.assignee] = (S.balances[o.assignee]||0) + pts;
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
       }
     }
@@ -2705,6 +2724,7 @@
   migratePlannedWeeksOnce();
   ensureOccurrences();
   migrateBalancesOnce();
+  clampBalances();
   updateMaxStreaks();
   evaluateBadges();
   render();
