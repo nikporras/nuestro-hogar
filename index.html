@@ -1347,18 +1347,24 @@
     // Step 2: build the set of (chore, date) the user chose for fast lookup.
     var chosen = {};
     wizardDraft.rows.forEach(function(r){ chosen[occKey(r.chore.id, r.date)] = true; });
-    // Step 3: for every touched chore × every naturally-due date in the planning
-    // range that the user did NOT choose, lay down a tombstone so ensureOccurrences
-    // doesn't re-materialise it from the template's defaults.
+    // Step 3a: collect every naturally-due (chore, date) in the planning range
+    // BEFORE placing any new tombstones — otherwise tombstoning a parent's date
+    // in this same loop would make a dependent's cascading isDue read return
+    // false, and we'd miss tombstoning the dependent's natural day.
+    var natural = {};
     Object.keys(touchedChores).forEach(function(chIdStr){
       var c = touchedChores[chIdStr];
       for(var d = new Date(wizardDraft.rangeStart); d <= wizardDraft.weekEnd; d = addDays(d, 1)){
-        if(!isDueDepth(c, d, 0)) continue; // we already removed tombstones above, this is template-due
-        var key = occKey(c.id, d);
-        if(chosen[key]) continue; // about to write the real row
-        if(S.occurrences[key]) continue; // a done one stayed; leave it
-        S.occurrences[key] = { tombstone: true };
+        if(!isDueDepth(c, d, 0)) continue;
+        natural[occKey(c.id, d)] = true;
       }
+    });
+    // Step 3b: for each natural-due (chore, date) the user did NOT choose, lay
+    // down a tombstone so ensureOccurrences doesn't re-materialise it.
+    Object.keys(natural).forEach(function(key){
+      if(chosen[key]) return;            // about to write the real row
+      if(S.occurrences[key]) return;     // a done one stayed; leave it
+      S.occurrences[key] = { tombstone: true };
     });
     // Step 4: write the wizard's chosen rows as locked occurrences.
     wizardDraft.rows.forEach(function(r){
