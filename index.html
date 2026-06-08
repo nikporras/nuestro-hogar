@@ -1313,6 +1313,33 @@
     alert("Done. Badges reset.");
   }
 
+  // Wipes every per-occurrence record (assignments, locks, tombstones, done-marks).
+  // Templates, doneLog history, balances, rewards, badges, streaks, and reminders
+  // are untouched. After the wipe both periods get re-materialised — and we also
+  // blank the current-period assignees so the board starts completely empty,
+  // ready for a fresh wizard pass.
+  function clearAllOccurrences(){
+    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, and skip across every chore is wiped — the board starts completely empty. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    S.occurrences = {};
+    invalidateBadgeStats();
+    ensureOccurrences();
+    // Blank current-period assignees too — the user asked for a totally empty
+    // start, so even today/this-week slots wait for the next wizard pass.
+    S.chores.forEach(function(c){
+      var ranges = periodRanges(c);
+      if(!ranges) return;
+      for(var d = new Date(ranges.current.start); d <= ranges.current.end; d = addDays(d, 1)){
+        if(!isDue(c, d)) continue;
+        var o = S.occurrences[occKey(c.id, d)];
+        if(o && !o.done && !o.tombstone){ o.assignee = null; o.pinned = false; }
+      }
+    });
+    save();
+    S.modal = null;
+    render();
+    alert("Done. The board is empty — assign tasks with the wizard whenever you're ready.");
+  }
+
   // Called from save(); checks every badge predicate, records the unlock instant.
   function evaluateBadges(){
     if(!S.badges) S.badges = {};
@@ -2517,6 +2544,14 @@
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Badges"}),
       h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:resetBadgeProgress, text:"Reset badge progress" }),
       h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Clears every unlocked badge and resets the streak personal-best. Purrs and rewards are untouched."})
+    );
+
+    // Start fresh — wipes per-occurrence data but keeps templates / history.
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Schedule"}),
+      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:clearAllOccurrences, text:"Start fresh — clear all occurrences" }),
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Empties the board: every assignment, lock, and skip disappears. Your chore list, history, Purrs, and badges stay."})
     );
 
     children.push(
