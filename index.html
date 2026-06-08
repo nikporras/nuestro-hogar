@@ -997,25 +997,28 @@
     bdCard.appendChild(bd);
     wrap.appendChild(bdCard);
 
-    // "Meet the cats" — small decorative card; each cat is a popup voice elsewhere.
-    wrap.appendChild(h("div",{class:"section-title", text:"Meet the cats"}));
-    var catsCard=h("div",{class:"vs-card", style:"display:flex;justify-content:space-around;gap:8px;padding:16px 12px;"});
+    // "Meet the Olympaws" — small decorative card; each cat is a popup voice elsewhere.
+    wrap.appendChild(h("div",{class:"section-title", text:"Meet the Olympaws"}));
+    var catsCard=h("div",{class:"vs-card", style:"padding:16px 12px;"});
+    catsCard.appendChild(h("div",{style:"text-align:center;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:14px;", text:"Developers"}));
+    var row=h("div",{style:"display:flex;justify-content:space-around;gap:8px;"});
     CATS.forEach(function(c){
       var col=h("div",{style:"flex:1;text-align:center;"});
       col.appendChild(h("img",{src:c.img, alt:c.name, style:"width:72px;height:72px;border-radius:50%;display:block;margin:0 auto;cursor:pointer;", onClick:function(){ openCat(c); }}));
       col.appendChild(h("div",{style:"font-weight:700;margin-top:8px;font-size:14px;", text:c.name}));
       col.appendChild(h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:2px;", text:c.role}));
-      catsCard.appendChild(col);
+      row.appendChild(col);
     });
+    catsCard.appendChild(row);
     wrap.appendChild(catsCard);
     return wrap;
   }
 
-  // Shared cat metadata — used by the "Meet the cats" card AND the zoom modal.
+  // Shared cat metadata — used by the "Meet the Olympaws" card AND the zoom modal.
   var CATS = [
-    { name:"Atena", role:"The Judge",       img:"./icons/cats/atena.png" },
-    { name:"Thor",  role:"The Herald",      img:"./icons/cats/thor.png"  },
-    { name:"Rum",   role:"The Cheerleader", img:"./icons/cats/rum.png"   }
+    { name:"Atena", role:"The Oracle",    img:"./icons/cats/atena.png" },
+    { name:"Thor",  role:"The Messenger", img:"./icons/cats/thor.png"  },
+    { name:"Rum",   role:"The Muse",      img:"./icons/cats/rum.png"   }
   ];
   var catView = null;
   function openCat(c){ catView = c; S.modal = "cat"; render(); }
