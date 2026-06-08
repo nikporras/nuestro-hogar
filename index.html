@@ -900,7 +900,7 @@
       var owed = 0, done = 0;
       for(var k = 0; k < S.chores.length; k++){
         var c = S.chores[k];
-        if(!isDue(c, d)) continue;
+        if(!showsOnDay(c, d)) continue;
         if(occAssignee(c, d) !== personIdx) continue;
         owed++;
         if(isDone(c, d)) done++;
@@ -1202,7 +1202,7 @@
   function choresForDay(date){
     return S.chores.filter(function(c){
       if(!showsOnDay(c,date)) return false;
-      if(S.filterPerson!==null && c.assignee!==S.filterPerson) return false;
+      if(S.filterPerson!==null && occAssignee(c,date)!==S.filterPerson) return false;
       return true;
     });
   }
