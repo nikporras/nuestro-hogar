@@ -1498,15 +1498,13 @@
     // assignee explicitly instead of inheriting the template's default person.
     var freshClear = !!S.scheduleClearedAt;
     S.chores.forEach(function(c){
+      // Pass 1: every natural-due / existing-pin date in this week.
+      var hadAny = false;
       for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
         var key = occKey(c.id, d);
         var o = S.occurrences[key];
         if(o && o.tombstone) continue;
-        if(o && o.done) continue;
-        // Include a row when there's an existing pin OR the date is template-
-        // due. Without the o check, a chore the user previously shuffled OFF
-        // its natural day (pin on Wed, tombstone on Mon from saveWizard step
-        // 3b) would vanish on reopen — isDueDepth is false for both days.
+        if(o && o.done){ hadAny = true; continue; } // counts as covered
         if(!o && !isDueDepth(c, d, 0)) continue;
         rows.push({
           chore: c,
@@ -1517,6 +1515,28 @@
           assignee: o ? o.assignee : (freshClear ? null : c.assignee),
           edited: false
         });
+        hadAny = true;
+      }
+      // Pass 2: if the chore has no presence this week (typical for biweekly
+      // whose anchor falls in next week, or weekly opened on a day past its
+      // weekday), pull its first upcoming natural-due / existing-pin date into
+      // the wizard so auto-shuffle can still give it a person. Bounded at 28d
+      // to cover biweekly + monthly first occurrences without being silly.
+      if(hadAny) return;
+      var lookEnd = addDays(weekEnd, 28);
+      for(var d2 = addDays(weekEnd, 1); d2 <= lookEnd; d2 = addDays(d2, 1)){
+        var key2 = occKey(c.id, d2);
+        var o2 = S.occurrences[key2];
+        if(o2 && o2.tombstone) continue;
+        if(o2 && o2.done) break;
+        if(!o2 && !isDueDepth(c, d2, 0)) continue;
+        rows.push({
+          chore: c,
+          date: new Date(d2),
+          assignee: o2 ? o2.assignee : (freshClear ? null : c.assignee),
+          edited: false
+        });
+        break; // first occurrence only
       }
     });
     // Index children by parent id so cascade-on-date-pick is O(children) instead of
@@ -1552,11 +1572,15 @@
     // Track which day-indexes each chore has already claimed so two rows of the
     // same daily chore don't both land on the same date (step 4 would silently
     // overwrite one). When all slots are taken we fall back to last-write-wins.
+    // Rows whose date is OUTSIDE this week (the "first occurrence" of a chore
+    // whose only due dates are next week or later) keep their natural date and
+    // only get a person — moving them into this week would change the plan.
     var perChoreSlots = {};
     nonDeps.forEach(function(row, i){
       var who = totals[0] <= totals[1] ? 0 : 1;
       row.assignee = who;
       totals[who] += effortOf(row.chore);
+      if(row.date < wizardDraft.rangeStart || row.date > wizardDraft.weekEnd) return;
       var cid = String(row.chore.id);
       if(!perChoreSlots[cid]) perChoreSlots[cid] = {};
       var start = i % days.length;
