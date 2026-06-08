@@ -1435,14 +1435,15 @@
     var freshClear = !!S.scheduleClearedAt;
     S.chores.forEach(function(c){
       for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
-        // Use template-level due-ness directly: showsOnDay would hide every
-        // candidate after "Start fresh" (the whole point of opening the wizard
-        // is to plan into that empty range). isDueDepth still honours tombstones
-        // a previous wizard pass placed within the range.
-        if(!isDueDepth(c, d, 0)) continue;
         var key = occKey(c.id, d);
         var o = S.occurrences[key];
-        if(o && o.done) continue; // skip done — already settled for this week
+        if(o && o.tombstone) continue;
+        if(o && o.done) continue;
+        // Include a row when there's an existing pin OR the date is template-
+        // due. Without the o check, a chore the user previously shuffled OFF
+        // its natural day (pin on Wed, tombstone on Mon from saveWizard step
+        // 3b) would vanish on reopen — isDueDepth is false for both days.
+        if(!o && !isDueDepth(c, d, 0)) continue;
         rows.push({
           chore: c,
           date: new Date(d),
@@ -1583,9 +1584,11 @@
         pinned: true
       };
     });
-    // The scheduleClearedAt flag intentionally stays set — after "Start fresh"
-    // the user drives every period via the wizard, so two-period auto-fill of
-    // the next period should NOT resume just because they planned this one.
+    // First wizard pass after "Start fresh" — clear the flag so
+    // ensureOccurrences resumes its two-period auto-fill. Without this the
+    // calendar would only ever show the explicitly-planned week, and the
+    // next-period "unassigned until you plan it" slots would never appear.
+    S.scheduleClearedAt = null;
     wizardDraft = null;
     S.modal = null;
     save();
