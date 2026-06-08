@@ -1345,6 +1345,36 @@
     alert("Done. Badges reset.");
   }
 
+  // Wipes everything that represents EARNED progress: doneLog history, Purrs
+  // balances, redemption ledger, unlocked badges, max-streak personal bests,
+  // and badge baselines. Also un-marks any done occurrences so the calendar
+  // shows them as still-to-do (otherwise we'd have visually-done cards with
+  // no backing entry in doneLog). Chore templates, reward catalog, current
+  // wizard pins, reminders, and account stay intact.
+  function wipeAllProgress(){
+    if(!confirm("Wipe ALL earned progress? Completion history, Purrs, badges, streaks, and redemptions are all reset to zero. Chore list, reward catalog, current week's plan, and reminders stay. This can't be undone.")) return;
+    if(S.occurrences){
+      Object.keys(S.occurrences).forEach(function(k){
+        var o = S.occurrences[k];
+        if(o && o.done){ o.done = false; o.doneAt = null; }
+      });
+    }
+    S.doneLog = {};
+    S.balances = [0, 0];
+    S.redemptions = [];
+    S.badges = {};
+    S.maxStreaks = [0, 0];
+    S.badgeBaselineDate = ymd(TODAY);
+    S.badgeBaselineAt = new Date().toISOString();
+    S.badgeBaselineBalances = [0, 0];
+    S.balancesMigratedAt = null;
+    invalidateBadgeStats();
+    save();
+    S.modal = null;
+    render();
+    alert("Done. Progress wiped — chores are still there, ready to earn from scratch.");
+  }
+
   // Wipes every per-occurrence record (assignments, locks, tombstones, done-marks)
   // and sets the scheduleClearedAt flag. From the cleared moment forward, the
   // board stays empty: showsOnDay refuses the template fallback and
@@ -1432,6 +1462,11 @@
     if(!S.occurrences) return t;
     var fromStr = ymd(TODAY);
     var toStr   = ymd(addDays(TODAY, 13));
+    // Pre-index by chore id stringified — occKey writes the id with string
+    // concat, so key.slice(0, under) is always a string, but chore.id is a
+    // number. A direct findChore(idStr) would fail the strict equality.
+    var byId = {};
+    S.chores.forEach(function(c){ byId[String(c.id)] = c; });
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
       if(!o || o.tombstone || o.done) return;
@@ -1439,7 +1474,7 @@
       var under = key.indexOf("_"); if(under < 0) return;
       var dStr = key.slice(under + 1);
       if(dStr < fromStr || dStr > toStr) return;
-      var chore = findChore(key.slice(0, under));
+      var chore = byId[key.slice(0, under)];
       if(!chore) return;
       t[o.assignee] += effortOf(chore);
     });
@@ -2654,6 +2689,14 @@
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Schedule"}),
       h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:clearAllOccurrences, text:"Start fresh — clear all occurrences" }),
       h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Empties the board: every assignment, lock, and skip disappears. Your chore list, history, Purrs, and badges stay."})
+    );
+
+    // Wipe progress — clears all earned/historical data but keeps chores.
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Progress"}),
+      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:wipeAllProgress, text:"Wipe all progress" }),
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Resets completion history, Purrs balance, badges, streaks, and redemptions to zero. Chore list and current plan stay."})
     );
 
     children.push(
