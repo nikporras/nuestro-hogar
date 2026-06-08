@@ -295,7 +295,10 @@
   function isDue(ch, date){ return isDueDepth(ch, date, 0); }
   function isDueDepth(ch, date, depth){
     if(depth > 4) return false; // cycle / over-chain guard
-    if(S.occurrences){
+    // S itself doesn't exist yet while the `var S = { ... }` init expression
+    // is being evaluated (seedDoneLog calls back through here), so guard the
+    // dereference — no occurrences yet means no tombstones to honour.
+    if(typeof S !== "undefined" && S.occurrences){
       var o0 = S.occurrences[occKey(ch.id, date)];
       if(o0 && o0.tombstone) return false;
     }
@@ -1249,9 +1252,9 @@
     // life of this wizard session.
     var childrenByParent = {};
     rows.forEach(function(r){
-      var la = r.chore.linkedAfter;
-      if(!la || !la.taskId) return;
-      var pid = String(la.taskId);
+      var sch = getSchedule(r.chore);
+      if(sch.kind !== "after" || !sch.parentId) return;
+      var pid = String(sch.parentId);
       if(!childrenByParent[pid]) childrenByParent[pid] = [];
       childrenByParent[pid].push(r);
     });
@@ -1263,9 +1266,9 @@
     if(!wizardDraft) return;
     // Heaviest first, distribute people to keep totals close; round-robin days across
     // [rangeStart..weekEnd] in chronological order so Monday isn't overloaded.
-    var nonDeps = wizardDraft.rows.filter(function(r){ return !r.edited && !(r.chore.linkedAfter && r.chore.linkedAfter.taskId); }).slice()
+    var nonDeps = wizardDraft.rows.filter(function(r){ return !r.edited && getSchedule(r.chore).kind !== "after"; }).slice()
       .sort(function(a,b){ return effortOf(b.chore) - effortOf(a.chore); });
-    var deps    = wizardDraft.rows.filter(function(r){ return !r.edited &&  (r.chore.linkedAfter && r.chore.linkedAfter.taskId); });
+    var deps    = wizardDraft.rows.filter(function(r){ return !r.edited && getSchedule(r.chore).kind === "after"; });
     var totals = [0, 0];
     // Pre-count effort from rows the user already edited so the balancer accounts for them.
     wizardDraft.rows.forEach(function(r){
@@ -1283,13 +1286,14 @@
     // Dependents inherit their parent's day + N, and pick up the parent's person so
     // the same hands that washed do the folding.
     deps.forEach(function(row){
-      var parentId = row.chore.linkedAfter.taskId;
+      var rowSch = getSchedule(row.chore);
+      var parentId = rowSch.parentId;
       var parentRow = null;
       for(var k=0;k<wizardDraft.rows.length;k++){
         if(wizardDraft.rows[k].chore.id === parentId){ parentRow = wizardDraft.rows[k]; break; }
       }
       if(parentRow){
-        row.date = addDays(parentRow.date, row.chore.linkedAfter.days || 1);
+        row.date = addDays(parentRow.date, rowSch.days || 1);
         if(parentRow.assignee === 0 || parentRow.assignee === 1){
           row.assignee = parentRow.assignee;
           totals[row.assignee] += effortOf(row.chore);
@@ -1307,8 +1311,8 @@
     var children = (wizardDraft.childrenByParent && wizardDraft.childrenByParent[String(parentChoreId)]) || [];
     children.forEach(function(row){
       if(row.edited) return; // soft link — user override sticks
-      var la = row.chore.linkedAfter;
-      row.date = addDays(newParentDate, la.days || 1);
+      var rowSch = getSchedule(row.chore);
+      row.date = addDays(newParentDate, rowSch.days || 1);
     });
   }
 
@@ -2133,6 +2137,10 @@
     // non-done occurrences so the change is visible immediately. Past + done are left
     // alone (their assignee is who actually did it).
     propagateTemplateChanges(target);
+    // Template changes affect cached badge stats: effort changes shift byDiff,
+    // default-assignee changes shift helpsByPerson for past completions, etc.
+    // Cheaper to invalidate once than to mirror every field into the cache.
+    invalidateBadgeStats();
     save(); editingId=null; draftOriginal=null; S.modal=null;
     return true;
   }
