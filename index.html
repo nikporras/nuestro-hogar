@@ -694,6 +694,32 @@
     save(); render();
   }
 
+  // ---------- streak (Phase 4) ----------
+  // A day counts toward a person's streak if they had >=1 occurrence assigned to them
+  // that day AND all of those occurrences are marked done. Days where they had nothing
+  // scheduled are streak-neutral — neither break nor extend. Today only counts if
+  // already 100% done; today-in-progress is skipped without breaking the streak.
+  function computeStreak(personIdx){
+    if(personIdx !== 0 && personIdx !== 1) return 0;
+    var streak = 0;
+    for(var i = 0; i <= 365; i++){
+      var d = addDays(TODAY, -i);
+      var owed = 0, done = 0;
+      for(var k = 0; k < S.chores.length; k++){
+        var c = S.chores[k];
+        if(!isDue(c, d)) continue;
+        if(occAssignee(c, d) !== personIdx) continue;
+        owed++;
+        if(isDone(c, d)) done++;
+      }
+      if(owed === 0) continue;          // neutral day — no break, no increment
+      if(done === owed){ streak++; continue; }
+      if(i === 0) continue;             // today not yet finished — don't break
+      break;                            // a past day with anything undone ends the streak
+    }
+    return streak;
+  }
+
   function choresForDay(date){
     return S.chores.filter(function(c){
       if(!isDue(c,date)) return false;
@@ -1053,13 +1079,14 @@
     var card=h("div",{class:"vs-card"}, trophy);
     [0,1].forEach(function(p){
       var pct = total? Math.round(counts[p]/total*100) : 0;
+      var streak = computeStreak(p);
       card.appendChild(h("div",{class:"vs-row"},
         h("div",{class:"vs-top"},
           h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
           h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
-        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;",text:counts[p]+" pts done"})
+        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;", text:counts[p]+" pts done"+(streak>0 ? "  ·  🔥 "+streak+"-day streak" : "")})
       ));
     });
     wrap.appendChild(card);
