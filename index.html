@@ -406,6 +406,19 @@
       if(o && o.tombstone) return false;
       if(o) return true;
     }
+    // Real completion history always shows (cards survive even after the
+    // materialised occurrence is gone — they're the visible receipt).
+    if(typeof S !== "undefined" && S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
+    // After "Start fresh", suppress the template fallback for everything from
+    // the cleared moment onward so far-ahead never re-grows ghost cards.
+    if(typeof S !== "undefined" && S.scheduleClearedAt && ymd(d) >= S.scheduleClearedAt.slice(0,10)) return false;
+    // Template fallback is bounded to the materialisation window — beyond that
+    // window there should be no ghost cards in either direction.
+    var pastFloor = addDays(startOfWeek(TODAY), -7);
+    if(d < pastFloor) return false;
+    var ranges = periodRanges(c);
+    var futureCeil = ranges ? ranges.next.end : addDays(TODAY, 14);
+    if(d > futureCeil) return false;
     return isDueDepth(c, d, 0);
   }
   function toggleWeekday(c, dow){
@@ -445,6 +458,7 @@
     plannedWeeks: load("nh_plannedWeeks", {}),
     badgeBaselineDate: load("nh_badgeBaselineDate", null),
     badgeBaselineAt:   load("nh_badgeBaselineAt", null),
+    scheduleClearedAt: load("nh_scheduleClearedAt", null),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
@@ -486,6 +500,7 @@
     localStorage.setItem("nh_plannedWeeks",JSON.stringify(S.plannedWeeks));
     localStorage.setItem("nh_badgeBaselineDate", JSON.stringify(S.badgeBaselineDate));
     localStorage.setItem("nh_badgeBaselineAt", JSON.stringify(S.badgeBaselineAt));
+    localStorage.setItem("nh_scheduleClearedAt", JSON.stringify(S.scheduleClearedAt));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
@@ -660,6 +675,7 @@
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
     var pastFrom = addDays(startOfWeek(TODAY), -7); // covers last week for stats / past-day edits
+    var clearedYmd = S.scheduleClearedAt ? S.scheduleClearedAt.slice(0,10) : null;
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
       var ranges = periodRanges(c);
@@ -684,7 +700,10 @@
         if(prev===0 || prev===1){
           // Migrated from doneLog: someone completed this date already.
           S.occurrences[key] = { assignee:prev, done:true, doneAt:ymd(d)+"T00:00:00Z", pinned:!!c.pinned };
-        } else {
+        } else if(!clearedYmd || ymd(d) < clearedYmd){
+          // Normal default materialisation. After "Start fresh", dates at or
+          // after the cleared moment skip this branch entirely — the wizard
+          // becomes the only thing that places real cards going forward.
           var here = inCurrent(d);
           S.occurrences[key] = {
             assignee: here ? c.assignee : null,        // next period starts unassigned
@@ -810,7 +829,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -830,6 +849,7 @@
     migratePlannedWeeksOnce();
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
+    if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
@@ -1014,7 +1034,9 @@
       var owed = 0, done = 0;
       for(var k = 0; k < S.chores.length; k++){
         var c = S.chores[k];
-        if(!showsOnDay(c, d)) continue;
+        // Use template-level due-ness so the new showsOnDay window cap doesn't
+        // make distant-past days look "neutral" and inflate the streak.
+        if(!isDueDepth(c, d, 0)) continue;
         if(occAssignee(c, d) !== personIdx) continue;
         owed++;
         if(isDone(c, d)) done++;
@@ -1313,28 +1335,27 @@
     alert("Done. Badges reset.");
   }
 
-  // Wipes every per-occurrence record (assignments, locks, tombstones, done-marks).
-  // Templates, doneLog history, balances, rewards, badges, streaks, and reminders
-  // are untouched. Tombstones every natural-due date within ±180 days so every
-  // view (week strip, month calendar, day-nav, past navigation) renders empty —
-  // except dates that already have a real done record in doneLog, so completed
-  // history stays visible. The next wizard pass clears tombstones in its range
-  // (saveWizard step 1) and re-tombstones whatever the user skips.
+  // Wipes every per-occurrence record (assignments, locks, tombstones, done-marks)
+  // and sets the scheduleClearedAt flag. From the cleared moment forward, the
+  // board stays empty: showsOnDay refuses the template fallback and
+  // ensureOccurrences skips its default materialisation, so no cards re-grow
+  // until the wizard explicitly places them. Past dates within the
+  // materialisation window get tombstoned so last-week ghost cards disappear
+  // too. Templates, doneLog history, balances, rewards, badges, streaks, and
+  // reminders are all untouched.
   function clearAllOccurrences(){
-    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped from the last 2 months through the next 6 months — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
     S.occurrences = {};
+    S.scheduleClearedAt = new Date().toISOString();
     invalidateBadgeStats();
-    // Two-pass: collect natural-due (chore, date) pairs BEFORE writing any
-    // tombstones — otherwise a parent's fresh tombstone would suppress a
-    // dependent's cascading isDue read and we'd miss it. Skip dates that have
-    // a real completion in doneLog so ensureOccurrences can re-materialise
-    // them as done.
-    // Floor at -60d because pruneOldTombstones drops anything older anyway.
-    var start = addDays(TODAY, -60);
-    var end   = addDays(TODAY, 180);
-    var keys  = [];
+    // Tombstone past natural-due dates within the materialisation window so
+    // last-week ghost cards disappear too. Dates beyond the window are already
+    // hidden by showsOnDay's cap. Skip dates with a real doneLog entry so
+    // completed history still renders.
+    var pastFloor = addDays(startOfWeek(TODAY), -7);
+    var keys = [];
     S.chores.forEach(function(c){
-      for(var d = new Date(start); d <= end; d = addDays(d, 1)){
+      for(var d = new Date(pastFloor); d < TODAY; d = addDays(d, 1)){
         if(!isDue(c, d)) continue;
         var k = occKey(c.id, d);
         if(S.doneLog && (S.doneLog[k] === 0 || S.doneLog[k] === 1)) continue;
@@ -1342,7 +1363,7 @@
       }
     });
     keys.forEach(function(k){ S.occurrences[k] = { tombstone: true }; });
-    save(); // ensureOccurrences skips already-present keys, so tombstones stand
+    save();
     S.modal = null;
     render();
     alert("Done. The board is empty — assign tasks with the wizard whenever you're ready.");
@@ -1539,6 +1560,10 @@
         pinned: true
       };
     });
+    // The user has explicitly planned a period — drop the "Start fresh" flag so
+    // ensureOccurrences resumes normal two-period materialisation for future
+    // periods. showsOnDay's window cap still keeps far-ahead empty.
+    S.scheduleClearedAt = null;
     wizardDraft = null;
     S.modal = null;
     save();
