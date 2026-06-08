@@ -444,6 +444,7 @@
     maxStreaks: load("nh_maxStreaks", [0,0]),
     plannedWeeks: load("nh_plannedWeeks", {}),
     badgeBaselineDate: load("nh_badgeBaselineDate", null),
+    badgeBaselineAt:   load("nh_badgeBaselineAt", null),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
@@ -484,6 +485,7 @@
     localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
     localStorage.setItem("nh_plannedWeeks",JSON.stringify(S.plannedWeeks));
     localStorage.setItem("nh_badgeBaselineDate", JSON.stringify(S.badgeBaselineDate));
+    localStorage.setItem("nh_badgeBaselineAt", JSON.stringify(S.badgeBaselineAt));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
@@ -708,7 +710,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -727,6 +729,7 @@
     // has to know the new shape.
     migratePlannedWeeksOnce();
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
+    if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
@@ -840,11 +843,14 @@
     var pts = effortOf(ch);
     var wasUnmarking = !!o.done;
     var prevAssignee = o.assignee;
+    var prevDoneAt = o.doneAt;
     if(o.done){
       if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
       o.done = false; o.doneAt = null;
       if(prevAssignee === 0 || prevAssignee === 1){
-        recordEvent("task_undone", { chore: ch, date: date, assignee: prevAssignee });
+        // Pass the old doneAt so the cache decrement matches the original
+        // applyDoneToStats baseline filter (don't undo something we never counted).
+        recordEvent("task_undone", { chore: ch, date: date, assignee: prevAssignee, doneAt: prevDoneAt });
       }
     } else {
       o.done = true;
@@ -871,10 +877,11 @@
     if(o.done){
       var pts = effortOf(ch);
       // Model the re-assignment as undo-on-old + redo-on-new so the cache stays
-      // accurate without a dedicated reassign code path.
+      // accurate without a dedicated reassign code path. Pass o.doneAt so the
+      // baseline filter is consistent across both events.
       if(prev === 0 || prev === 1){
         S.balances[prev] -= pts;
-        recordEvent("task_undone", { chore: ch, date: date, assignee: prev });
+        recordEvent("task_undone", { chore: ch, date: date, assignee: prev, doneAt: o.doneAt });
       }
       if(o.assignee === 0 || o.assignee === 1){
         S.balances[o.assignee] += pts;
@@ -1093,14 +1100,21 @@
     var s = emptyBadgeStats();
     var byId = {};
     S.chores.forEach(function(c){ byId[c.id]=c; });
-    var baseline = S.badgeBaselineDate || "";
+    var baselineDate = S.badgeBaselineDate || "";
+    var baselineAt   = S.badgeBaselineAt   || "";
     var todayStr = ymd(TODAY);
     function ingest(key, assignee, doneAt){
       var dash = key.indexOf("_"); if(dash < 0) return;
       var chId = parseInt(key.slice(0, dash), 10);
       var dateStr = key.slice(dash + 1);
-      if(baseline && dateStr < baseline) return;
       if(dateStr > todayStr) return;
+      // Use the precise reset moment when the entry has a doneAt timestamp; for
+      // legacy doneLog rows (no doneAt) fall back to the date-only baseline.
+      if(baselineAt && doneAt){
+        if(doneAt < baselineAt) return;
+      } else if(baselineDate && dateStr < baselineDate){
+        return;
+      }
       var c = byId[chId]; if(!c) return;
       if(assignee !== 0 && assignee !== 1) return;
       applyDoneToStats(s, c, dateStr, assignee, doneAt);
@@ -1127,13 +1141,19 @@
   // from S.rewards / S.redemptions on demand (filtered by baseline).
   function recordEvent(kind, payload){
     if(!S.badgeStats) S.badgeStats = buildBadgeStats();
-    var baseline = S.badgeBaselineDate || "";
+    var baselineDate = S.badgeBaselineDate || "";
+    var baselineAt   = S.badgeBaselineAt   || "";
     var todayStr = ymd(TODAY);
     var dateStr = typeof payload.date === "string" ? payload.date : ymd(payload.date);
-    if(baseline && dateStr < baseline) return;
+    var doneAt = payload.doneAt;
     if(dateStr > todayStr) return;
+    if(baselineAt && doneAt){
+      if(doneAt < baselineAt) return;
+    } else if(baselineDate && dateStr < baselineDate){
+      return;
+    }
     if(payload.assignee !== 0 && payload.assignee !== 1) return;
-    if(kind === "task_done")   applyDoneToStats(S.badgeStats, payload.chore, dateStr, payload.assignee, payload.doneAt);
+    if(kind === "task_done")   applyDoneToStats(S.badgeStats, payload.chore, dateStr, payload.assignee, doneAt);
     else if(kind === "task_undone") undoDoneFromStats(S.badgeStats, payload.chore, dateStr, payload.assignee);
   }
   function invalidateBadgeStats(){ S.badgeStats = null; }
@@ -1173,16 +1193,17 @@
   // Wipes every unlocked badge + the personal-best streaks, and sets today as the
   // new baseline so computeBadgeStats / computeStreak ignore everything older.
   function resetBadgeProgress(){
-    if(!confirm("Reset all badge progress? You'll earn badges from today onwards. Purrs balance and reward catalog are not affected.")) return;
+    if(!confirm("Reset all badge progress? Anything completed before this moment is wiped from the count — only new activity earns badges. Purrs balance and reward catalog are not affected.")) return;
     S.badges = {};
     S.maxStreaks = [0, 0];
     S.badgeBaselineDate = ymd(TODAY);
+    S.badgeBaselineAt   = new Date().toISOString();
     S.badgeBaselineBalances = [S.balances[0]||0, S.balances[1]||0];
-    invalidateBadgeStats(); // baseline date changed → rebuild from scratch
+    invalidateBadgeStats(); // baseline moved → rebuild from scratch
     save();
     S.modal = null;
     render();
-    alert("Done. Badges reset — new baseline is today.");
+    alert("Done. Badges reset.");
   }
 
   // Called from save(); checks every badge predicate, records the unlock instant.
