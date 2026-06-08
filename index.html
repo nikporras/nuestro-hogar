@@ -1429,7 +1429,7 @@
     var eff  = effortOf(ch);
     var who  = occAssignee(ch, date);
     var lock = occPinned(ch, date);
-    return h("div",{class:"card"+(done?" done":"")},
+    var children = [
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
@@ -1442,7 +1442,37 @@
             onClick: lock ? function(){ openEdit(ch); } : function(){ cycleOccAssignee(ch, date); }})
         )
       )
-    );
+    ];
+    // Per-occurrence skip ("delete just this day") — only on undone cards.
+    if(!done){
+      children.push(h("div",{
+        style:"cursor:pointer;color:var(--muted);font-size:22px;line-height:1;padding:0 8px 0 4px;align-self:center;",
+        title:"Skip this day",
+        onClick:function(e){
+          e.stopPropagation();
+          if(!confirm("Skip '"+ch.name+"' for this day? It'll still appear on its other scheduled days.")) return;
+          skipOccurrence(ch, date);
+        },
+        text:"×"
+      }));
+    }
+    return h("div",{class:"card"+(done?" done":"")}, children);
+  }
+
+  // Drop this single (chore, date) from the schedule without marking it done. Writes
+  // a tombstone at the occurrence key so showsOnDay / isDueDepth hide the card and
+  // ensureOccurrences doesn't re-materialise it from the template's defaults.
+  // The template stays untouched — other days still fire.
+  function skipOccurrence(ch, date){
+    if(!S.occurrences) S.occurrences = {};
+    var key = occKey(ch.id, date);
+    var existing = S.occurrences[key];
+    if(existing && existing.done){
+      alert("This task is already done. Uncheck it first if you want to skip it.");
+      return;
+    }
+    S.occurrences[key] = { tombstone: true };
+    save(); render();
   }
 
   function reminderCard(r){
