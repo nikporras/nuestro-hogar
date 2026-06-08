@@ -160,6 +160,25 @@
   .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:14px;}
   .empty .big{font-size:40px;display:block;margin-bottom:10px;}
 
+  /* Floating top-right HUD — streak + Purr balance always in view while scrolling */
+  .topbar{
+    position:fixed; top:8px; left:50%; transform:translateX(-50%);
+    width:100%; max-width:480px; padding:0 14px;
+    display:flex; justify-content:flex-end; pointer-events:none; z-index:30;
+  }
+  .topchip{
+    pointer-events:auto;
+    background:rgba(0,0,0,0.42); color:#fff;
+    border-radius:18px; padding:5px 11px;
+    font-size:13px; font-weight:800; cursor:pointer;
+    display:flex; align-items:center; gap:8px;
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    box-shadow:0 2px 10px rgba(0,0,0,0.25);
+    border:none; font-family:inherit;
+  }
+  .topchip .sep{ width:1px; height:14px; background:rgba(255,255,255,0.35); margin:0 1px; }
+  .topchip img{ width:14px; height:14px; }
+
   /* FAB */
   .fab{
     position:fixed;right:calc(50% - 240px + 18px);bottom:90px;width:54px;height:54px;border-radius:50%;
@@ -1975,6 +1994,24 @@
     return hd;
   }
 
+  // Floating top-right HUD: the device user's streak + Purr balance. Stays fixed
+  // through scrolling, taps jump straight to the Stats tab where the source lives.
+  function topHud(){
+    var p = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
+    var streak = computeStreak(p);
+    var bal = S.balances && (S.balances[p] != null) ? S.balances[p] : 0;
+    var wrap = h("div",{class:"topbar"});
+    var chip = h("button",{class:"topchip", onClick:function(){ S.tab="logros"; render(); }},
+      h("span",{text:"🔥"}),
+      h("span",{text:String(streak)}),
+      h("span",{class:"sep"}),
+      h("img",{src:"./icons/purr.png", alt:"Purrs"}),
+      h("span",{text:String(bal)})
+    );
+    wrap.appendChild(chip);
+    return wrap;
+  }
+
   function nav(){
     var tabs=[["today","🏠","Today"],["week","📅","Week"],["month","🗓️","Month"],["tasks","📋","Tasks"],["logros","🏆","Stats"]];
     var n=h("div",{class:"nav"});
@@ -1990,6 +2027,7 @@
     root.innerHTML="";
     if(!isAuthed()){ document.body.classList.remove("modal-open"); root.appendChild(viewLogin()); return; }
     root.appendChild(header());
+    root.appendChild(topHud());
     var body;
     if(S.tab==="today") body=viewToday();
     else if(S.tab==="week") body=viewWeek();
