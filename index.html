@@ -348,6 +348,7 @@
     redemptions: load("nh_redemptions", []),
     badges: load("nh_badges", {}),
     maxStreaks: load("nh_maxStreaks", [0,0]),
+    plannedWeeks: load("nh_plannedWeeks", {}),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
@@ -385,6 +386,7 @@
     localStorage.setItem("nh_redemptions",JSON.stringify(S.redemptions));
     localStorage.setItem("nh_badges",JSON.stringify(S.badges));
     localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
+    localStorage.setItem("nh_plannedWeeks",JSON.stringify(S.plannedWeeks));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
   function save(){
@@ -473,11 +475,20 @@
 
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
+    if(!S.plannedWeeks || typeof S.plannedWeeks!=="object") S.plannedWeeks={};
     var from = addDays(startOfWeek(TODAY), -7);
     var to   = addDays(TODAY, 14);
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
       for(var d=new Date(from); d<=to; d=addDays(d,1)){
+        // If the user planned this week's schedule via the wizard, don't let the
+        // template's natural isDue add back a date the user explicitly moved away from.
+        // Skip only the future part of the planned week — past days are settled.
+        var wkYmd = ymd(startOfWeek(d));
+        if(S.plannedWeeks[wkYmd] && d >= TODAY){
+          var key0 = occKey(c.id, d);
+          if(!S.occurrences[key0]) continue;
+        }
         if(!isDue(c, d)) continue;
         var key = occKey(c.id, d);
         if(S.occurrences[key]) continue;
@@ -567,7 +578,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -580,6 +591,7 @@
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
+    if(d.plannedWeeks&&typeof d.plannedWeeks==="object") S.plannedWeeks=d.plannedWeeks;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally.
@@ -985,34 +997,91 @@
     return t;
   }
   // Deal out every upcoming non-done, non-locked occurrence in the next 14 days so
-  // total effort ends up balanced across both people. Done/locked occurrences count
-  // toward the running totals and aren't touched. Each newly-shuffled occurrence is
-  // locked to its new person; the lock drops automatically when the occurrence is
-  // marked done. The template's default assignee is left alone — it just supplies
-  // the starting person for occurrences materialised in the future.
-  function shuffleAssignments(){
-    var totals=[0,0]; var pool=[];
-    var from=new Date(TODAY); var to=addDays(TODAY,14);
+  // ---------- Weekly Shuffle wizard (Phase 7) ----------
+  // The wizard opens with one row per scheduled occurrence in [today, end of week],
+  // each editable for both day and person. "Auto-balance" picks people to even out
+  // effort and round-robins days across the week. Save replaces every undone
+  // occurrence in the planned range with the user's chosen (date, assignee) pairs;
+  // the week gets marked as planned so ensureOccurrences won't undo the moves.
+  var wizardDraft = null;
+
+  function openWizard(){
+    var weekStart = startOfWeek(TODAY);
+    var weekEnd   = addDays(weekStart, 6);
+    var rangeStart = new Date(TODAY); // schedule from today onwards, leave past alone
+    var rows = [];
     S.chores.forEach(function(c){
-      for(var d=new Date(from); d<=to; d=addDays(d,1)){
-        if(!isDue(c,d)) continue;
-        var o = ensureOcc(c, d);
-        if(o.done || o.pinned){
-          if(o.assignee===0||o.assignee===1) totals[o.assignee]+=effortOf(c);
-        } else {
-          pool.push({chore:c, occ:o});
-        }
+      for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
+        if(!isDue(c, d)) continue;
+        var key = occKey(c.id, d);
+        var o = S.occurrences[key];
+        if(o && o.done) continue; // skip done — already settled for this week
+        rows.push({
+          chore: c,
+          date: new Date(d),
+          assignee: o ? o.assignee : c.assignee,
+          edited: false
+        });
       }
     });
-    if(!pool.length){ alert("Nothing to shuffle — every upcoming task is done or locked."); return; }
-    for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
-    pool.forEach(function(p){
-      var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
-      p.occ.assignee = who; p.occ.pinned = true;
-      totals[who] += effortOf(p.chore);
-    });
-    save(); render();
+    wizardDraft = { rows: rows, weekStart: weekStart, weekEnd: weekEnd, rangeStart: rangeStart };
+    S.modal = "wizard"; render();
   }
+
+  function autoBalanceWizard(){
+    if(!wizardDraft) return;
+    // Heaviest first, distribute people to keep totals close; round-robin days across
+    // [rangeStart..weekEnd] in chronological order so Monday isn't overloaded.
+    var rows = wizardDraft.rows.filter(function(r){ return !r.edited; }).slice()
+      .sort(function(a,b){ return effortOf(b.chore) - effortOf(a.chore); });
+    var totals = [0, 0];
+    // Pre-count effort from rows the user already edited so the balancer accounts for them.
+    wizardDraft.rows.forEach(function(r){
+      if(r.edited && (r.assignee === 0 || r.assignee === 1)) totals[r.assignee] += effortOf(r.chore);
+    });
+    // Build the list of valid days in the planning range.
+    var days = [];
+    for(var d=new Date(wizardDraft.rangeStart); d<=wizardDraft.weekEnd; d=addDays(d,1)) days.push(new Date(d));
+    rows.forEach(function(row, i){
+      var who = totals[0] <= totals[1] ? 0 : 1;
+      row.assignee = who;
+      totals[who] += effortOf(row.chore);
+      row.date = days[i % days.length];
+    });
+    render();
+  }
+
+  function saveWizard(){
+    if(!wizardDraft) return;
+    // Delete every undone occurrence for any chore the wizard covered in the planning
+    // range, then write the user's chosen (date, assignee) records and lock them.
+    var touchedChores = {};
+    wizardDraft.rows.forEach(function(r){ touchedChores[r.chore.id] = true; });
+    var fromKey = ymd(wizardDraft.rangeStart), toKey = ymd(wizardDraft.weekEnd);
+    Object.keys(S.occurrences).forEach(function(key){
+      var under = key.indexOf("_"); if(under < 0) return;
+      var chId = parseInt(key.slice(0, under), 10);
+      if(!touchedChores[chId]) return;
+      var dStr = key.slice(under + 1);
+      if(dStr < fromKey || dStr > toKey) return;
+      var o = S.occurrences[key];
+      if(o && !o.done) delete S.occurrences[key];
+    });
+    wizardDraft.rows.forEach(function(r){
+      var key = occKey(r.chore.id, r.date);
+      S.occurrences[key] = {
+        assignee: r.assignee,
+        done: false,
+        doneAt: null,
+        pinned: true
+      };
+    });
+    S.plannedWeeks[ymd(wizardDraft.weekStart)] = true;
+    wizardDraft = null;
+    S.modal = null;
+    save();
+  }
+  function closeWizard(){ wizardDraft = null; S.modal = null; render(); }
 
   // ---------- tiny DOM helper ----------
   function h(tag, attrs){
@@ -1131,6 +1200,31 @@
     var date=addDays(TODAY, S.dayOffset||0);
     var list=choresForDay(date);
     var wrap=h("div",{class:"content"});
+    // Weekly planning banner — only on real Today, only if this week hasn't been planned.
+    if((S.dayOffset||0) === 0){
+      var wkYmd = ymd(startOfWeek(TODAY));
+      if(!S.plannedWeeks[wkYmd]){
+        var weekEnd = addDays(startOfWeek(TODAY), 6);
+        var pendingCount = 0;
+        for(var ci=0; ci<S.chores.length; ci++){
+          for(var dPlan = new Date(TODAY); dPlan <= weekEnd; dPlan = addDays(dPlan,1)){
+            if(isDue(S.chores[ci], dPlan)) pendingCount++;
+          }
+        }
+        if(pendingCount > 0){
+          wrap.appendChild(h("div",{
+            style:"background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;padding:12px 14px;border-radius:14px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;",
+            onClick: openWizard
+          },
+            h("div",{style:"flex:1;min-width:0;"},
+              h("div",{style:"font-weight:800;font-size:14.5px;", text:"Plan this week"}),
+              h("div",{style:"font-size:12px;opacity:0.85;margin-top:2px;", text: pendingCount+" tasks to schedule"})
+            ),
+            h("div",{style:"font-size:22px;font-weight:800;", text:"›"})
+          ));
+        }
+      }
+    }
     // Reminders are a todo list, not date-specific — show them on Today only.
     if((S.dayOffset||0)===0) wrap.appendChild(remindersSection());
     var dateBit=DOW_SHORT[date.getDay()]+" "+date.getDate()+" "+MONTHS[date.getMonth()];
@@ -1258,7 +1352,7 @@
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
       h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)"),
-      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:shuffleAssignments, text:"🔀 Shuffle" })
+      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:openWizard, text:"🔀 Plan week" })
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
@@ -1524,6 +1618,94 @@
 
   // UI-only toggle for the Badges card: top 5 by default, full grid on tap.
   var badgesExpanded = false;
+
+  function modalWizard(){
+    if(!wizardDraft) return h("div");
+    var weekStart = wizardDraft.weekStart;
+    var weekEnd   = wizardDraft.weekEnd;
+    // Group rows by chronological date for display.
+    var rowsCopy = wizardDraft.rows.slice().sort(function(a,b){ return a.date - b.date; });
+
+    var monthLine = (function(){
+      var sm = MONTHS[weekStart.getMonth()].slice(0,3);
+      var em = MONTHS[weekEnd.getMonth()].slice(0,3);
+      return sm===em
+        ? sm+" "+weekStart.getDate()+"–"+weekEnd.getDate()+" "+weekStart.getFullYear()
+        : sm+" "+weekStart.getDate()+" – "+em+" "+weekEnd.getDate()+" "+weekEnd.getFullYear();
+    })();
+
+    var listEl = h("div",{class:"modal-scroll", style:"margin-top:10px;"});
+    if(rowsCopy.length === 0){
+      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:24px 8px;",
+        text:"Nothing scheduled in the rest of this week."}));
+    } else {
+      rowsCopy.forEach(function(r){
+        var row = h("div",{style:"padding:12px 12px 14px;border:1.5px solid var(--border);border-radius:13px;margin-bottom:10px;background:var(--input-bg);"});
+        row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
+          h("span",{style:"font-size:22px;", text:r.chore.icon || "🧽"}),
+          h("div",{style:"flex:1;min-width:0;"},
+            h("div",{style:"font-weight:700;font-size:14.5px;", text:r.chore.name}),
+            h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;", text:r.chore.freq + " · " + effortOf(r.chore) + " pt"})
+          )
+        ));
+        // Day picker — 7 buttons, only days in [rangeStart..weekEnd] are tappable.
+        var dayPick = h("div",{style:"display:flex;gap:4px;margin-bottom:8px;"});
+        for(var i=0;i<7;i++){
+          (function(){
+            var d = addDays(weekStart, i);
+            var disabled = d < wizardDraft.rangeStart;
+            var picked = sameDay(d, r.date);
+            var bg = picked ? "var(--accent1)" : "var(--surface)";
+            var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
+            var btn = h("button",{
+              style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:8px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.35":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+              onClick: disabled ? null : function(){ r.date = d; r.edited = true; render(); }
+            },
+              h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
+              h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
+            );
+            dayPick.appendChild(btn);
+          })();
+        }
+        row.appendChild(dayPick);
+        // Person picker
+        var personPick = h("div",{style:"display:flex;gap:6px;"});
+        [null, 0, 1].forEach(function(p){
+          var picked = r.assignee === p;
+          var label = p == null ? "Anyone" : S.names[p];
+          var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
+          var fg = picked ? "#fff" : "var(--text)";
+          var border = picked ? bg : "var(--border)";
+          personPick.appendChild(h("button",{
+            style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
+            onClick:function(){ r.assignee = p; r.edited = true; render(); },
+            text: label
+          }));
+        });
+        row.appendChild(personPick);
+        listEl.appendChild(row);
+      });
+    }
+
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeWizard(); } }},
+      h("div",{class:"modal tall"},
+        h("div",{class:"sheet-top"},
+          h("div",{class:"grab"}),
+          h("h3",{style:"margin:0 0 2px;font-size:18px;text-align:center;", text:"Plan this week"}),
+          h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;", text:monthLine}),
+          h("button",{
+            style:"margin:14px auto 0;display:block;border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:800;font-size:13px;padding:8px 18px;border-radius:18px;cursor:pointer;",
+            onClick: autoBalanceWizard,
+            text: "🔀 Auto-balance"
+          })
+        ),
+        listEl,
+        h("div",{class:"modal-actions", style:"margin-top:6px;"},
+          h("button",{class:"btn ghost", text:"Cancel", onClick: closeWizard}),
+          h("button",{class:"btn primary", text:"Save the week", onClick: saveWizard})
+        )
+      ));
+  }
 
   // ---------- "When next?" picker for Biweekly / cycle-Monthly (Phase 6) ----------
   var whenNextCtx = null;
@@ -2093,6 +2275,7 @@
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
     if(S.modal==="whenNext") root.appendChild(modalWhenNext());
+    if(S.modal==="wizard") root.appendChild(modalWizard());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
