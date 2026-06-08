@@ -290,9 +290,15 @@
   // The ONLY function that decides whether a chore shows on a given date.
   // Linked chores derive their schedule from their parent: A linked-after B by N days
   // is due on D iff B is due on D - N. A depth guard catches accidental cycles.
+  // A tombstone on the occurrence ("user moved this away") suppresses the date at
+  // every level of the cascade, so a parent's tombstone also hides its dependents.
   function isDue(ch, date){ return isDueDepth(ch, date, 0); }
   function isDueDepth(ch, date, depth){
     if(depth > 4) return false; // cycle / over-chain guard
+    if(S.occurrences){
+      var o0 = S.occurrences[occKey(ch.id, date)];
+      if(o0 && o0.tombstone) return false;
+    }
     if(ch.linkedAfter && ch.linkedAfter.taskId){
       var parent = findChore(ch.linkedAfter.taskId);
       if(!parent) return false;
@@ -498,23 +504,16 @@
 
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
-    if(!S.plannedWeeks || typeof S.plannedWeeks!=="object") S.plannedWeeks={};
     var from = addDays(startOfWeek(TODAY), -7);
     var to   = addDays(TODAY, 14);
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
       for(var d=new Date(from); d<=to; d=addDays(d,1)){
-        // If the user planned this week's schedule via the wizard, don't let the
-        // template's natural isDue add back ANY date in the week — including past
-        // days that the wizard moved away from. saveWizard authored the entire
-        // week's intended schedule, so anything missing inside that week is missing
-        // by design.
-        var wkYmd = ymd(startOfWeek(d));
-        if(S.plannedWeeks[wkYmd]){
-          if(!S.occurrences[occKey(c.id, d)]) continue;
-        }
         if(!isDue(c, d)) continue;
         var key = occKey(c.id, d);
+        // Any record at the key — including a tombstone the wizard wrote when it
+        // moved the user's task away from this date — means "the user has authored
+        // this slot; don't materialise from template defaults".
         if(S.occurrences[key]) continue;
         var prev = S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, key) ? S.doneLog[key] : undefined;
         if(prev===0 || prev===1){
@@ -525,6 +524,44 @@
         }
       }
     }
+    pruneOldTombstones();
+  }
+  // One-shot: replace the old week-granular plannedWeeks flag with per-occurrence
+  // tombstones. Idempotent — runs as long as S.plannedWeeks has entries; clears it
+  // afterwards. Triggered on startup and on every applyDoc (so a remote phone still
+  // on the old build can sync in and we'll convert).
+  function migratePlannedWeeksOnce(){
+    if(!S.plannedWeeks) return;
+    var keys = Object.keys(S.plannedWeeks);
+    if(keys.length === 0){ S.plannedWeeks = null; return; }
+    keys.forEach(function(wkYmd){
+      var sp = wkYmd.split("-");
+      var weekStart = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+      var weekEnd = addDays(weekStart, 6);
+      S.chores.forEach(function(c){
+        for(var d = new Date(weekStart); d <= weekEnd; d = addDays(d, 1)){
+          if(!isDueDepth(c, d, 0)) continue;
+          var key = occKey(c.id, d);
+          if(S.occurrences[key]) continue;
+          S.occurrences[key] = { tombstone: true };
+        }
+      });
+    });
+    S.plannedWeeks = null;
+  }
+
+  // Tombstones outside the rolling materialisation window do no work — sweep them
+  // off the synced doc so old "skip this day" records don't accumulate forever.
+  function pruneOldTombstones(){
+    if(!S.occurrences) return;
+    var cutoff = ymd(addDays(TODAY, -60));
+    Object.keys(S.occurrences).forEach(function(key){
+      var o = S.occurrences[key];
+      if(!o || !o.tombstone) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var dateStr = key.slice(dash + 1);
+      if(dateStr < cutoff) delete S.occurrences[key];
+    });
   }
 
   // ---------- Supabase: magic-link auth + single shared JSON document sync ----------
@@ -616,6 +653,10 @@
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
     if(d.plannedWeeks&&typeof d.plannedWeeks==="object") S.plannedWeeks=d.plannedWeeks;
+    // A phone on the older build may push S.plannedWeeks instead of per-occurrence
+    // tombstones — convert as soon as we receive it, so the rest of the app only
+    // has to know the new shape.
+    migratePlannedWeeksOnce();
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
@@ -1218,19 +1259,36 @@
 
   function saveWizard(){
     if(!wizardDraft) return;
-    // Delete every undone occurrence for any chore the wizard covered in the planning
-    // range, then write the user's chosen (date, assignee) records and lock them.
+    // Step 1: drop every existing undone occurrence for any chore the wizard
+    // covered in the planning range, so we can lay down the new plan cleanly.
     var touchedChores = {};
-    wizardDraft.rows.forEach(function(r){ touchedChores[String(r.chore.id)] = true; });
+    wizardDraft.rows.forEach(function(r){ touchedChores[String(r.chore.id)] = r.chore; });
     var fromKey = ymd(wizardDraft.rangeStart), toKey = ymd(wizardDraft.weekEnd);
     Object.keys(S.occurrences).forEach(function(key){
       var under = key.indexOf("_"); if(under < 0) return;
-      if(!touchedChores[key.slice(0, under)]) return; // string-compare on the raw key prefix
+      if(!touchedChores[key.slice(0, under)]) return;
       var dStr = key.slice(under + 1);
       if(dStr < fromKey || dStr > toKey) return;
       var o = S.occurrences[key];
       if(o && !o.done) delete S.occurrences[key];
     });
+    // Step 2: build the set of (chore, date) the user chose for fast lookup.
+    var chosen = {};
+    wizardDraft.rows.forEach(function(r){ chosen[occKey(r.chore.id, r.date)] = true; });
+    // Step 3: for every touched chore × every naturally-due date in the planning
+    // range that the user did NOT choose, lay down a tombstone so ensureOccurrences
+    // doesn't re-materialise it from the template's defaults.
+    Object.keys(touchedChores).forEach(function(chIdStr){
+      var c = touchedChores[chIdStr];
+      for(var d = new Date(wizardDraft.rangeStart); d <= wizardDraft.weekEnd; d = addDays(d, 1)){
+        if(!isDueDepth(c, d, 0)) continue; // we already removed tombstones above, this is template-due
+        var key = occKey(c.id, d);
+        if(chosen[key]) continue; // about to write the real row
+        if(S.occurrences[key]) continue; // a done one stayed; leave it
+        S.occurrences[key] = { tombstone: true };
+      }
+    });
+    // Step 4: write the wizard's chosen rows as locked occurrences.
     wizardDraft.rows.forEach(function(r){
       var key = occKey(r.chore.id, r.date);
       S.occurrences[key] = {
@@ -1240,7 +1298,6 @@
         pinned: true
       };
     });
-    S.plannedWeeks[ymd(wizardDraft.weekStart)] = true;
     wizardDraft = null;
     S.modal = null;
     save();
@@ -1364,29 +1421,31 @@
     var date=addDays(TODAY, S.dayOffset||0);
     var list=choresForDay(date);
     var wrap=h("div",{class:"content"});
-    // Weekly planning banner — only on real Today, only if this week hasn't been planned.
+    // Weekly planning banner — only on real Today, and only if any future-due
+    // chore in this week is still showing its template default (no wizard pin yet,
+    // no tombstone, not already done).
     if((S.dayOffset||0) === 0){
-      var wkYmd = ymd(startOfWeek(TODAY));
-      if(!S.plannedWeeks[wkYmd]){
-        var weekEnd = addDays(startOfWeek(TODAY), 6);
-        var pendingCount = 0;
-        for(var ci=0; ci<S.chores.length; ci++){
-          for(var dPlan = new Date(TODAY); dPlan <= weekEnd; dPlan = addDays(dPlan,1)){
-            if(isDue(S.chores[ci], dPlan)) pendingCount++;
-          }
+      var weekEnd = addDays(startOfWeek(TODAY), 6);
+      var pendingCount = 0;
+      for(var ci=0; ci<S.chores.length; ci++){
+        for(var dPlan = new Date(TODAY); dPlan <= weekEnd; dPlan = addDays(dPlan,1)){
+          if(!isDue(S.chores[ci], dPlan)) continue;
+          var oPlan = S.occurrences[occKey(S.chores[ci].id, dPlan)];
+          if(oPlan && (oPlan.done || oPlan.pinned)) continue;
+          pendingCount++;
         }
-        if(pendingCount > 0){
-          wrap.appendChild(h("div",{
-            style:"background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;padding:12px 14px;border-radius:14px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;",
-            onClick: openWizard
-          },
-            h("div",{style:"flex:1;min-width:0;"},
-              h("div",{style:"font-weight:800;font-size:14.5px;", text:"Plan this week"}),
-              h("div",{style:"font-size:12px;opacity:0.85;margin-top:2px;", text: pendingCount+" tasks to schedule"})
-            ),
-            h("div",{style:"font-size:22px;font-weight:800;", text:"›"})
-          ));
-        }
+      }
+      if(pendingCount > 0){
+        wrap.appendChild(h("div",{
+          style:"background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;padding:12px 14px;border-radius:14px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;",
+          onClick: openWizard
+        },
+          h("div",{style:"flex:1;min-width:0;"},
+            h("div",{style:"font-weight:800;font-size:14.5px;", text:"Plan this week"}),
+            h("div",{style:"font-size:12px;opacity:0.85;margin-top:2px;", text: pendingCount+" tasks to schedule"})
+          ),
+          h("div",{style:"font-size:22px;font-weight:800;", text:"›"})
+        ));
       }
     }
     // Reminders are a todo list, not date-specific — show them on Today only.
@@ -2509,6 +2568,7 @@
 
   captureAuthFromHash();
   maybeWeeklySnapshot();
+  migratePlannedWeeksOnce();
   ensureOccurrences();
   migrateBalancesOnce();
   updateMaxStreaks();
