@@ -624,6 +624,7 @@
     // (streak personal bests, badge unlocks) so the partner's work shows on this
     // phone immediately instead of waiting for the next local save().
     ensureOccurrences();
+    invalidateBadgeStats(); // remote may have new completions — cache is stale
     updateMaxStreaks();
     evaluateBadges();
   }
@@ -728,19 +729,22 @@
     var o = ensureOcc(ch, date);
     var pts = effortOf(ch);
     var wasUnmarking = !!o.done;
+    var prevAssignee = o.assignee;
     if(o.done){
-      // Unmark: refund the credited person.
       if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
       o.done = false; o.doneAt = null;
+      if(prevAssignee === 0 || prevAssignee === 1){
+        recordEvent("task_undone", { chore: ch, date: date, assignee: prevAssignee });
+      }
     } else {
-      // Mark done: credit the assignee + drop the lock.
       o.done = true;
       o.doneAt = new Date().toISOString();
       o.pinned = false;
-      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] += pts;
+      if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] += pts;
+        recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
+      }
     }
-    // doneLog is read-only legacy: it carries pre-Phase-1 history for dates outside
-    // the materialised window. New completions live entirely on the occurrence.
     save();
     if(!wasUnmarking && !ch.linkedAfter && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
       openWhenNext(ch, date);
@@ -753,10 +757,17 @@
     var prev = o.assignee;
     o.assignee = o.assignee == null ? 0 : (o.assignee === 0 ? 1 : null);
     if(o.done){
-      // Transfer the credit when an already-done occurrence is re-assigned.
       var pts = effortOf(ch);
-      if(prev === 0 || prev === 1) S.balances[prev] -= pts;
-      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] += pts;
+      // Model the re-assignment as undo-on-old + redo-on-new so the cache stays
+      // accurate without a dedicated reassign code path.
+      if(prev === 0 || prev === 1){
+        S.balances[prev] -= pts;
+        recordEvent("task_undone", { chore: ch, date: date, assignee: prev });
+      }
+      if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] += pts;
+        recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
+      }
     }
     save(); render();
   }
@@ -894,100 +905,157 @@
     ];
   }
 
+  // ---------- badge stats cache (Phase 9 item 1) ----------
+  // Walking every doneLog entry + every occurrence on every save was O(history)
+  // per checkbox tap. The cache lives device-local (never synced — derivable from
+  // data), is rebuilt from scratch on app load / sync / reset, and updated
+  // incrementally via recordEvent on individual writes.
+  //
+  // The monotone fields (tripleThreat, helped* booleans, helpsInBest*, maxDayEarning)
+  // only ever move upward — earning a streak/triple in the past stays true even
+  // after an unmark, matching the "achievements are forever" semantics.
+  function emptyBadgeStats(){
+    return {
+      totalDone:0, byDiff:{1:0,2:0,3:0},
+      doneByPerson:[0,0], helpsByPerson:[0,0],
+      perDayHelps:[{},{}], perWeekHelps:[{},{}],
+      perDayDiff:{}, perDayEarning:{},
+      helpsInBestDay:0, helpsInBestWeek:0, maxDayEarning:0,
+      tripleThreat:false, helpedOnWeekend:false,
+      helpedBeforeNoon:false, helpedAfter9pm:false
+    };
+  }
+  function applyDoneToStats(s, c, dateStr, assignee, doneAt){
+    s.totalDone++;
+    s.doneByPerson[assignee]++;
+    var diff = effortOf(c);
+    if(diff===1||diff===2||diff===3) s.byDiff[diff]++;
+    if(!s.perDayDiff[dateStr]) s.perDayDiff[dateStr] = {};
+    s.perDayDiff[dateStr][diff] = true;
+    if(s.perDayDiff[dateStr][1] && s.perDayDiff[dateStr][2] && s.perDayDiff[dateStr][3]) s.tripleThreat = true;
+    s.perDayEarning[dateStr] = (s.perDayEarning[dateStr]||0) + diff;
+    if(s.perDayEarning[dateStr] > s.maxDayEarning) s.maxDayEarning = s.perDayEarning[dateStr];
+    var defAssn = c.assignee;
+    if((defAssn===0||defAssn===1) && defAssn !== assignee){
+      s.helpsByPerson[assignee]++;
+      var sp = dateStr.split("-");
+      var dateObj = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+      s.perDayHelps[assignee][dateStr] = (s.perDayHelps[assignee][dateStr]||0) + 1;
+      if(s.perDayHelps[assignee][dateStr] > s.helpsInBestDay) s.helpsInBestDay = s.perDayHelps[assignee][dateStr];
+      var wkKey = ymd(startOfWeek(dateObj));
+      s.perWeekHelps[assignee][wkKey] = (s.perWeekHelps[assignee][wkKey]||0) + 1;
+      if(s.perWeekHelps[assignee][wkKey] > s.helpsInBestWeek) s.helpsInBestWeek = s.perWeekHelps[assignee][wkKey];
+      var dow = dateObj.getDay();
+      if(dow===0||dow===6) s.helpedOnWeekend = true;
+      if(doneAt){
+        var dt = new Date(doneAt);
+        if(!isNaN(dt.getTime())){
+          var hr = dt.getHours();
+          if(hr < 12) s.helpedBeforeNoon = true;
+          if(hr >= 21) s.helpedAfter9pm = true;
+        }
+      }
+    }
+  }
+  function undoDoneFromStats(s, c, dateStr, assignee){
+    s.totalDone--;
+    s.doneByPerson[assignee]--;
+    var diff = effortOf(c);
+    if(diff===1||diff===2||diff===3) s.byDiff[diff]--;
+    if(s.perDayDiff[dateStr]) delete s.perDayDiff[dateStr][diff];
+    if(s.perDayEarning[dateStr]) s.perDayEarning[dateStr] -= diff;
+    var defAssn = c.assignee;
+    if((defAssn===0||defAssn===1) && defAssn !== assignee){
+      s.helpsByPerson[assignee]--;
+      if(s.perDayHelps[assignee][dateStr]) s.perDayHelps[assignee][dateStr]--;
+      var sp = dateStr.split("-");
+      var dateObj = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+      var wkKey = ymd(startOfWeek(dateObj));
+      if(s.perWeekHelps[assignee][wkKey]) s.perWeekHelps[assignee][wkKey]--;
+      // helpsInBest*, helped* booleans stay — monotone.
+    }
+  }
+
+  // Rebuilds the cache from raw data. Use on load / sync / reset / template-delete.
+  function buildBadgeStats(){
+    var s = emptyBadgeStats();
+    var byId = {};
+    S.chores.forEach(function(c){ byId[c.id]=c; });
+    var baseline = S.badgeBaselineDate || "";
+    var todayStr = ymd(TODAY);
+    function ingest(key, assignee, doneAt){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var chId = parseInt(key.slice(0, dash), 10);
+      var dateStr = key.slice(dash + 1);
+      if(baseline && dateStr < baseline) return;
+      if(dateStr > todayStr) return;
+      var c = byId[chId]; if(!c) return;
+      if(assignee !== 0 && assignee !== 1) return;
+      applyDoneToStats(s, c, dateStr, assignee, doneAt);
+    }
+    if(S.occurrences){
+      Object.keys(S.occurrences).forEach(function(k){
+        var o = S.occurrences[k];
+        if(o && o.done) ingest(k, o.assignee, o.doneAt);
+      });
+    }
+    if(S.doneLog){
+      Object.keys(S.doneLog).forEach(function(k){
+        if(S.occurrences && S.occurrences[k] && S.occurrences[k].done) return;
+        ingest(k, S.doneLog[k], null);
+      });
+    }
+    return s;
+  }
+
+  // Incremental write hook used by toggleDone / cycleOccAssignee. Kinds:
+  //  - task_done   { chore, date, assignee, doneAt? }
+  //  - task_undone { chore, date, assignee }
+  // Reward / redemption events don't go through here — those badges read straight
+  // from S.rewards / S.redemptions on demand (filtered by baseline).
+  function recordEvent(kind, payload){
+    if(!S.badgeStats) S.badgeStats = buildBadgeStats();
+    var baseline = S.badgeBaselineDate || "";
+    var todayStr = ymd(TODAY);
+    var dateStr = typeof payload.date === "string" ? payload.date : ymd(payload.date);
+    if(baseline && dateStr < baseline) return;
+    if(dateStr > todayStr) return;
+    if(payload.assignee !== 0 && payload.assignee !== 1) return;
+    if(kind === "task_done")   applyDoneToStats(S.badgeStats, payload.chore, dateStr, payload.assignee, payload.doneAt);
+    else if(kind === "task_undone") undoDoneFromStats(S.badgeStats, payload.chore, dateStr, payload.assignee);
+  }
+  function invalidateBadgeStats(){ S.badgeStats = null; }
+
   function computeBadgeStats(){
-    // Stateful counts (rewards / redemptions / balance) need to ignore anything that
-    // already existed at the moment Reset was hit, otherwise the same badges
-    // re-unlock immediately. Filter rewards / redemptions by their own timestamps,
-    // and measure balance growth from the baseline snapshot.
+    if(!S.badgeStats) S.badgeStats = buildBadgeStats();
+    var s = S.badgeStats;
+    // Wrap the cumulative cache with the on-demand reward/redemption/balance views.
     var baseline = S.badgeBaselineDate || "";
     var baselineISO = baseline ? baseline + "T00:00:00.000Z" : "";
     var bb = S.badgeBaselineBalances || [0,0];
     function afterBaseline(iso){ return baselineISO ? (iso || "") >= baselineISO : true; }
     var rewardsSince = (S.rewards||[]).filter(function(r){ return afterBaseline(r.createdAt); });
     var redemptionsSince = (S.redemptions||[]).filter(function(r){ return afterBaseline(r.redeemedAt); });
-    var s = {
-      totalDone:0, byDiff:{1:0,2:0,3:0},
+    var teamPlayer = (s.doneByPerson[0] > 0 && s.helpsByPerson[0] / s.doneByPerson[0] >= 0.5) ||
+                     (s.doneByPerson[1] > 0 && s.helpsByPerson[1] / s.doneByPerson[1] >= 0.5);
+    return {
+      totalDone: s.totalDone,
+      byDiff: s.byDiff,
       maxStreak: Math.max(S.maxStreaks[0]||0, S.maxStreaks[1]||0),
-      tripleThreat:false,
-      helperTotal:0, helpsInBestWeek:0, helpsInBestDay:0,
-      helpedOnWeekend:false, helpedBeforeNoon:false, helpedAfter9pm:false,
-      teamPlayer:false,
+      tripleThreat: s.tripleThreat,
+      helperTotal: Math.max(s.helpsByPerson[0], s.helpsByPerson[1]),
+      helpsInBestWeek: s.helpsInBestWeek,
+      helpsInBestDay: s.helpsInBestDay,
+      helpedOnWeekend: s.helpedOnWeekend,
+      helpedBeforeNoon: s.helpedBeforeNoon,
+      helpedAfter9pm: s.helpedAfter9pm,
+      teamPlayer: teamPlayer,
       redemptionCount: redemptionsSince.length,
       catalogCount: rewardsSince.length,
       maxRewardCost: rewardsSince.reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0),
-      maxDayEarning:0,
+      maxDayEarning: s.maxDayEarning,
       maxBalance: Math.max((S.balances[0]||0) - (bb[0]||0), (S.balances[1]||0) - (bb[1]||0))
     };
-    var byId = {};
-    S.chores.forEach(function(c){ byId[c.id]=c; });
-    var perDayDiff = {}, perDayEarning = {};
-    var helpsByPerson = [0,0], doneByPerson = [0,0];
-    var perDayHelps = [{},{}], perWeekHelps = [{},{}];
-
-    var baseline = S.badgeBaselineDate || "";
-    var todayStr = ymd(TODAY);
-    function record(key, assignee, doneAt){
-      var dash = key.indexOf("_"); if(dash < 0) return;
-      var chId = parseInt(key.slice(0, dash), 10);
-      var dateStr = key.slice(dash + 1);
-      // After a badge reset, only count completions on or after the baseline date.
-      if(baseline && dateStr < baseline) return;
-      // Don't credit completions scheduled in the future — the wizard can place a
-      // task on next Saturday and the user could tap it done from the day-nav
-      // ahead of time, which would inflate maxDayEarning / tripleThreat windows.
-      if(dateStr > todayStr) return;
-      var c = byId[chId]; if(!c) return;
-      if(assignee !== 0 && assignee !== 1) return;
-      s.totalDone++;
-      doneByPerson[assignee]++;
-      var diff = effortOf(c);
-      if(diff === 1 || diff === 2 || diff === 3) s.byDiff[diff]++;
-      if(!perDayDiff[dateStr]) perDayDiff[dateStr] = {};
-      perDayDiff[dateStr][diff] = true;
-      if(perDayDiff[dateStr][1] && perDayDiff[dateStr][2] && perDayDiff[dateStr][3]) s.tripleThreat = true;
-      perDayEarning[dateStr] = (perDayEarning[dateStr] || 0) + diff;
-      if(perDayEarning[dateStr] > s.maxDayEarning) s.maxDayEarning = perDayEarning[dateStr];
-      // Helping: assignee did a task whose template default is the other person
-      var defAssn = c.assignee;
-      if((defAssn === 0 || defAssn === 1) && defAssn !== assignee){
-        helpsByPerson[assignee]++;
-        var p = dateStr.split("-");
-        var dateObj = new Date(+p[0], (+p[1])-1, +p[2]);
-        perDayHelps[assignee][dateStr] = (perDayHelps[assignee][dateStr]||0) + 1;
-        var wkKey = ymd(startOfWeek(dateObj));
-        perWeekHelps[assignee][wkKey] = (perWeekHelps[assignee][wkKey]||0) + 1;
-        var dow = dateObj.getDay();
-        if(dow === 0 || dow === 6) s.helpedOnWeekend = true;
-        if(doneAt){
-          var dt = new Date(doneAt);
-          if(!isNaN(dt.getTime())){
-            var hr = dt.getHours();
-            if(hr < 12) s.helpedBeforeNoon = true;
-            if(hr >= 21) s.helpedAfter9pm = true;
-          }
-        }
-      }
-    }
-
-    if(S.occurrences){
-      Object.keys(S.occurrences).forEach(function(k){
-        var o = S.occurrences[k];
-        if(o && o.done) record(k, o.assignee, o.doneAt);
-      });
-    }
-    if(S.doneLog){
-      Object.keys(S.doneLog).forEach(function(k){
-        if(S.occurrences && S.occurrences[k] && S.occurrences[k].done) return;
-        record(k, S.doneLog[k], null);
-      });
-    }
-    s.helperTotal = Math.max(helpsByPerson[0], helpsByPerson[1]);
-    [0,1].forEach(function(p){
-      Object.keys(perDayHelps[p]).forEach(function(d){ if(perDayHelps[p][d] > s.helpsInBestDay) s.helpsInBestDay = perDayHelps[p][d]; });
-      Object.keys(perWeekHelps[p]).forEach(function(w){ if(perWeekHelps[p][w] > s.helpsInBestWeek) s.helpsInBestWeek = perWeekHelps[p][w]; });
-      if(doneByPerson[p] > 0 && helpsByPerson[p] / doneByPerson[p] >= 0.5) s.teamPlayer = true;
-    });
-    return s;
   }
 
   // Wipes every unlocked badge + the personal-best streaks, and sets today as the
@@ -998,6 +1066,7 @@
     S.maxStreaks = [0, 0];
     S.badgeBaselineDate = ymd(TODAY);
     S.badgeBaselineBalances = [S.balances[0]||0, S.balances[1]||0];
+    invalidateBadgeStats(); // baseline date changed → rebuild from scratch
     save();
     S.modal = null;
     render();
@@ -2073,6 +2142,7 @@
         onClick:function(){
           if(!confirm("Delete \""+(draft.name||"this task")+"\"? This can't be undone.")) return;
           for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
+          invalidateBadgeStats(); // template gone, cached contributions need a rebuild
           save(); editingId=null; draftOriginal=null; S.modal=null; render();
         }, text:"Delete task" }));
     }
