@@ -1430,6 +1430,9 @@
     var weekEnd   = addDays(weekStart, 6);
     var rangeStart = new Date(TODAY); // schedule from today onwards, leave past alone
     var rows = [];
+    // After "Start fresh", every row defaults to Anyone so the user picks each
+    // assignee explicitly instead of inheriting the template's default person.
+    var freshClear = !!S.scheduleClearedAt;
     S.chores.forEach(function(c){
       for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
         // Use template-level due-ness directly: showsOnDay would hide every
@@ -1443,7 +1446,7 @@
         rows.push({
           chore: c,
           date: new Date(d),
-          assignee: o ? o.assignee : c.assignee,
+          assignee: freshClear ? null : (o ? o.assignee : c.assignee),
           edited: false
         });
       }
@@ -1564,10 +1567,9 @@
         pinned: true
       };
     });
-    // The user has explicitly planned a period — drop the "Start fresh" flag so
-    // ensureOccurrences resumes normal two-period materialisation for future
-    // periods. showsOnDay's window cap still keeps far-ahead empty.
-    S.scheduleClearedAt = null;
+    // The scheduleClearedAt flag intentionally stays set — after "Start fresh"
+    // the user drives every period via the wizard, so two-period auto-fill of
+    // the next period should NOT resume just because they planned this one.
     wizardDraft = null;
     S.modal = null;
     save();
