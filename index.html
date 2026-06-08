@@ -1446,7 +1446,10 @@
         rows.push({
           chore: c,
           date: new Date(d),
-          assignee: freshClear ? null : (o ? o.assignee : c.assignee),
+          // Preserve an existing occurrence's assignee (e.g. a previous wizard
+          // pass already pinned someone) — only fall through to the Anyone
+          // default when this is a fresh row with no record yet.
+          assignee: o ? o.assignee : (freshClear ? null : c.assignee),
           edited: false
         });
       }
