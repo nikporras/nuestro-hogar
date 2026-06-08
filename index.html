@@ -1432,7 +1432,11 @@
     var rows = [];
     S.chores.forEach(function(c){
       for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
-        if(!showsOnDay(c, d)) continue;
+        // Use template-level due-ness directly: showsOnDay would hide every
+        // candidate after "Start fresh" (the whole point of opening the wizard
+        // is to plan into that empty range). isDueDepth still honours tombstones
+        // a previous wizard pass placed within the range.
+        if(!isDueDepth(c, d, 0)) continue;
         var key = occKey(c.id, d);
         var o = S.occurrences[key];
         if(o && o.done) continue; // skip done — already settled for this week
