@@ -585,25 +585,113 @@
     save(); render();
   }
 
+  // Current + next "period" for a chore. Used by ensureOccurrences and the
+  // calendar export so each task surfaces this period's assigned occurrence AND
+  // the next period's unassigned slot. Period length follows the schedule kind:
+  //   daily / weekly       → calendar week (Mon-Sun)
+  //   biweekly             → current 14-day cycle from the anchor
+  //   monthly_cycle        → current 28-day cycle from the anchor
+  //   monthly_dom          → current calendar month
+  //   after                → mirrors the parent's periods, shifted by the link
+  function periodRanges(c){
+    var cur = periodRangeFor(c, TODAY);
+    if(!cur) return null;
+    var sch = getSchedule(c);
+    var next;
+    if(sch.kind === "monthly_dom"){
+      var nextFirst = new Date(TODAY.getFullYear(), TODAY.getMonth()+1, 1);
+      var nextLast  = new Date(TODAY.getFullYear(), TODAY.getMonth()+2, 0);
+      next = { start: nextFirst, end: nextLast };
+    } else if(sch.kind === "after"){
+      var parent = findChore(sch.parentId);
+      var pranges = parent ? periodRanges(parent) : null;
+      if(!pranges) return null;
+      var n = sch.days || 1;
+      cur  = { start: addDays(pranges.current.start, n), end: addDays(pranges.current.end, n) };
+      next = { start: addDays(pranges.next.start,   n), end: addDays(pranges.next.end,   n) };
+    } else {
+      var len = daysBetween(cur.start, cur.end);
+      next = { start: addDays(cur.end, 1), end: addDays(cur.end, 1 + len) };
+    }
+    return { current: cur, next: next };
+  }
+  // Period containing the given date for a single chore. Returns null when the
+  // schedule can't define a period (e.g. biweekly with no anchor yet).
+  function periodRangeFor(c, when){
+    var sch = getSchedule(c);
+    if(sch.kind === "daily" || sch.kind === "weekly"){
+      var wk = startOfWeek(when);
+      return { start: wk, end: addDays(wk, 6) };
+    }
+    if(sch.kind === "biweekly"){
+      if(!sch.anchor) return null;
+      var p = sch.anchor.split("-");
+      var a = new Date(+p[0], (+p[1])-1, +p[2]); a.setHours(0,0,0,0);
+      var diff = daysBetween(a, when);
+      if(diff < 0) return { start: a, end: addDays(a, 13) };
+      var s = addDays(a, Math.floor(diff/14)*14);
+      return { start: s, end: addDays(s, 13) };
+    }
+    if(sch.kind === "monthly_cycle"){
+      if(!sch.anchor) return null;
+      var p2 = sch.anchor.split("-");
+      var a2 = new Date(+p2[0], (+p2[1])-1, +p2[2]); a2.setHours(0,0,0,0);
+      var diff2 = daysBetween(a2, when);
+      if(diff2 < 0) return { start: a2, end: addDays(a2, 27) };
+      var s2 = addDays(a2, Math.floor(diff2/28)*28);
+      return { start: s2, end: addDays(s2, 27) };
+    }
+    if(sch.kind === "monthly_dom"){
+      var first = new Date(when.getFullYear(), when.getMonth(), 1);
+      var last  = new Date(when.getFullYear(), when.getMonth()+1, 0);
+      return { start: first, end: last };
+    }
+    if(sch.kind === "after"){
+      var parent = findChore(sch.parentId);
+      if(!parent) return null;
+      var n = sch.days || 1;
+      var pr = periodRangeFor(parent, addDays(when, -n));
+      if(!pr) return null;
+      return { start: addDays(pr.start, n), end: addDays(pr.end, n) };
+    }
+    return null;
+  }
+
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
-    var from = addDays(startOfWeek(TODAY), -7);
-    var to   = addDays(TODAY, 14);
+    var pastFrom = addDays(startOfWeek(TODAY), -7); // covers last week for stats / past-day edits
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
-      for(var d=new Date(from); d<=to; d=addDays(d,1)){
+      var ranges = periodRanges(c);
+      var futureTo = ranges ? ranges.next.end : addDays(TODAY, 14);
+      var inCurrent = function(d){
+        return ranges && d >= ranges.current.start && d <= ranges.current.end;
+      };
+      for(var d=new Date(pastFrom); d<=futureTo; d=addDays(d,1)){
         if(!isDue(c, d)) continue;
         var key = occKey(c.id, d);
-        // Any record at the key — including a tombstone the wizard wrote when it
-        // moved the user's task away from this date — means "the user has authored
-        // this slot; don't materialise from template defaults".
-        if(S.occurrences[key]) continue;
+        if(S.occurrences[key]){
+          // Refresh: an unpinned undone occurrence that has slid into the NEXT
+          // period (because the user re-planned, or the clock rolled forward)
+          // becomes unassigned again, waiting for the next wizard pass.
+          var existing = S.occurrences[key];
+          if(!existing.tombstone && !existing.done && !existing.pinned && !inCurrent(d) && existing.assignee !== null){
+            existing.assignee = null;
+          }
+          continue;
+        }
         var prev = S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, key) ? S.doneLog[key] : undefined;
         if(prev===0 || prev===1){
           // Migrated from doneLog: someone completed this date already.
           S.occurrences[key] = { assignee:prev, done:true, doneAt:ymd(d)+"T00:00:00Z", pinned:!!c.pinned };
         } else {
-          S.occurrences[key] = { assignee:c.assignee, done:false, doneAt:null, pinned:!!c.pinned };
+          var here = inCurrent(d);
+          S.occurrences[key] = {
+            assignee: here ? c.assignee : null,        // next period starts unassigned
+            done: false,
+            doneAt: null,
+            pinned: here ? !!c.pinned : false           // and unlocked
+          };
         }
       }
     }
@@ -1709,8 +1797,8 @@
     } else {
       wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
     }
-    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send next 8 days to calendar" }));
-    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Creates events for the next 8 days, no repeats. Do it each week to send the next one." }));
+    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send to calendar" }));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Each task goes through its current and next period (week / biweek / month). Next period's slots are unassigned until you plan them."}));
     return wrap;
   }
 
@@ -2452,24 +2540,33 @@
   function buildICS(filter){
     var stamp=icsStampUTC();
     var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Olympaws//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Olympaws"];
-    // One-off (non-recurring) all-day events for the next 8 days, computed with
-    // the app's own isDue() so they match exactly what the app shows. Re-export
-    // each week to get the next week — and to reflect the latest Shuffle.
-    for(var off=0; off<8; off++){
-      var day=addDays(TODAY, off);
-      S.chores.forEach(function(c){
-        if(!showsOnDay(c, day)) return;
-        var who = occAssignee(c, day);
-        if(filter===0 || filter===1){ if(who!==filter) return; }
+    // For each chore, lay down its occurrences in the current AND next period
+    // (per the schedule kind). Current-period assignments are the wizard's;
+    // next-period slots are usually unassigned, waiting to be planned. Re-export
+    // each period to refresh.
+    S.chores.forEach(function(c){
+      var ranges = periodRanges(c);
+      if(!ranges) return;
+      var start = ranges.current.start, end = ranges.next.end;
+      // Skip past dates that have already been done — calendar should reflect
+      // upcoming work, not historical receipts.
+      if(start < TODAY) start = TODAY;
+      for(var d=new Date(start); d<=end; d=addDays(d,1)){
+        if(!showsOnDay(c, d)) continue;
+        var who = occAssignee(c, d);
+        // Filter by person: skip if filter is set AND a person is assigned but
+        // doesn't match. Unassigned occurrences pass through under any filter so
+        // the user can see what's still pending.
+        if((filter===0 || filter===1) && (who===0 || who===1) && who!==filter) continue;
         var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+pName(who));
         L.push("BEGIN:VEVENT",
-          "UID:nh-"+c.id+"-"+icsDate(day)+"@nuestro-hogar","DTSTAMP:"+stamp,
-          "DTSTART;VALUE=DATE:"+icsDate(day),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(day)),
+          "UID:nh-"+c.id+"-"+icsDate(d)+"@nuestro-hogar","DTSTAMP:"+stamp,
+          "DTSTART;VALUE=DATE:"+icsDate(d),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(d)),
           "SUMMARY:"+summary,
           "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+summary,"TRIGGER:PT9H","END:VALARM",
           "END:VEVENT");
-      });
-    }
+      }
+    });
     L.push("END:VCALENDAR");
     return L.join("\r\n");
   }
@@ -2491,7 +2588,7 @@
         onClick:function(){ S.modal=null; render(); fn(); }, text:label});
     }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Export next 8 days"}),
+      h("div",{class:"modal"}, h("h3",{text:"Export to calendar"}),
         h("div",{style:"font-size:13px;color:var(--muted);margin-bottom:6px;",text:"Whose tasks should go in the calendar?"}),
         pick("Both of us", "var(--accent2)", function(){ downloadICS(null); }),
         pick(S.names[0]+" only", pColor(0), function(){ downloadICS(0); }),
