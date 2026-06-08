@@ -1301,8 +1301,10 @@
     if(!S.badgeStats) S.badgeStats = buildBadgeStats();
     var s = S.badgeStats;
     // Wrap the cumulative cache with the on-demand reward/redemption/balance views.
-    var baseline = S.badgeBaselineDate || "";
-    var baselineISO = baseline ? baseline + "T00:00:00.000Z" : "";
+    // Use the precise wipe moment when available — falling back to date+midnight
+    // means rewards/redemptions made EARLIER on the wipe day still pass the
+    // filter, which is how catalog/redemption badges sneak back in.
+    var baselineISO = S.badgeBaselineAt || (S.badgeBaselineDate ? S.badgeBaselineDate + "T00:00:00.000Z" : "");
     var bb = S.badgeBaselineBalances || [0,0];
     function afterBaseline(iso){ return baselineISO ? (iso || "") >= baselineISO : true; }
     var rewardsSince = (S.rewards||[]).filter(function(r){ return afterBaseline(r.createdAt); });
