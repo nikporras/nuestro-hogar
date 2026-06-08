@@ -409,9 +409,10 @@
     // Real completion history always shows (cards survive even after the
     // materialised occurrence is gone — they're the visible receipt).
     if(typeof S !== "undefined" && S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
-    // After "Start fresh", suppress the template fallback for everything from
-    // the cleared moment onward so far-ahead never re-grows ghost cards.
-    if(typeof S !== "undefined" && S.scheduleClearedAt && ymd(d) >= S.scheduleClearedAt.slice(0,10)) return false;
+    // While the post-Start-fresh gate is still on, suppress the template
+    // fallback for everything from the cleared moment onward so the board
+    // doesn't re-grow ghost cards before the wizard places real ones.
+    if(typeof S !== "undefined" && S.suppressInitialMaterialisation && S.scheduleClearedAt && ymd(d) >= S.scheduleClearedAt.slice(0,10)) return false;
     // Template fallback is bounded to the materialisation window — beyond that
     // window there should be no ghost cards in either direction.
     var pastFloor = addDays(startOfWeek(TODAY), -7);
@@ -459,6 +460,7 @@
     badgeBaselineDate: load("nh_badgeBaselineDate", null),
     badgeBaselineAt:   load("nh_badgeBaselineAt", null),
     scheduleClearedAt: load("nh_scheduleClearedAt", null),
+    suppressInitialMaterialisation: load("nh_suppressInitialMaterialisation", false),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
@@ -501,6 +503,7 @@
     localStorage.setItem("nh_badgeBaselineDate", JSON.stringify(S.badgeBaselineDate));
     localStorage.setItem("nh_badgeBaselineAt", JSON.stringify(S.badgeBaselineAt));
     localStorage.setItem("nh_scheduleClearedAt", JSON.stringify(S.scheduleClearedAt));
+    localStorage.setItem("nh_suppressInitialMaterialisation", JSON.stringify(!!S.suppressInitialMaterialisation));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
@@ -675,6 +678,12 @@
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
     var pastFrom = addDays(startOfWeek(TODAY), -7); // covers last week for stats / past-day edits
+    // Materialisation gate: set on Start fresh, cleared on first wizard save.
+    // (scheduleClearedAt is a persistent timestamp used for hide-history-dot
+    // logic, not the gate.) When this is true, default materialisation of
+    // current/next-period slots is skipped — the board stays empty until the
+    // wizard explicitly places cards.
+    var gateNew = !!S.suppressInitialMaterialisation;
     var clearedYmd = S.scheduleClearedAt ? S.scheduleClearedAt.slice(0,10) : null;
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
@@ -700,8 +709,8 @@
         if(prev===0 || prev===1){
           // Migrated from doneLog: someone completed this date already.
           S.occurrences[key] = { assignee:prev, done:true, doneAt:ymd(d)+"T00:00:00Z", pinned:!!c.pinned };
-        } else if(!clearedYmd || ymd(d) < clearedYmd){
-          // Normal default materialisation. After "Start fresh", dates at or
+        } else if(!gateNew || !clearedYmd || ymd(d) < clearedYmd){
+          // Normal default materialisation. While the gate is on, dates at or
           // after the cleared moment skip this branch entirely — the wizard
           // becomes the only thing that places real cards going forward.
           var here = inCurrent(d);
@@ -829,7 +838,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -850,6 +859,7 @@
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
+    if(typeof d.suppressInitialMaterialisation==="boolean") S.suppressInitialMaterialisation=d.suppressInitialMaterialisation;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
@@ -1347,6 +1357,7 @@
     if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
     S.occurrences = {};
     S.scheduleClearedAt = new Date().toISOString();
+    S.suppressInitialMaterialisation = true;
     invalidateBadgeStats();
     // Tombstone past natural-due dates within the materialisation window so
     // last-week ghost cards disappear too. Dates beyond the window are already
@@ -1410,10 +1421,28 @@
   }
 
   // ---------- fair workload split ----------
-  // Total assigned effort points per person (the fairness measure).
+  // Total assigned effort points per person — counts the actual planned
+  // occurrences in [today, today+13d], not the chore templates' default
+  // assignees. After the wizard runs, the per-occurrence assignments are the
+  // truth; reading c.assignee here gave wrong numbers (e.g. a chore template-
+  // defaulted to Nico but wizard-assigned to Caro this week was still counted
+  // against Nico). Skips done, tombstoned, and unassigned slots.
   function assignedPoints(){
-    var t=[0,0];
-    S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
+    var t = [0, 0];
+    if(!S.occurrences) return t;
+    var fromStr = ymd(TODAY);
+    var toStr   = ymd(addDays(TODAY, 13));
+    Object.keys(S.occurrences).forEach(function(key){
+      var o = S.occurrences[key];
+      if(!o || o.tombstone || o.done) return;
+      if(o.assignee !== 0 && o.assignee !== 1) return;
+      var under = key.indexOf("_"); if(under < 0) return;
+      var dStr = key.slice(under + 1);
+      if(dStr < fromStr || dStr > toStr) return;
+      var chore = findChore(key.slice(0, under));
+      if(!chore) return;
+      t[o.assignee] += effortOf(chore);
+    });
     return t;
   }
   // Deal out every upcoming non-done, non-locked occurrence in the next 14 days so
@@ -1584,11 +1613,11 @@
         pinned: true
       };
     });
-    // First wizard pass after "Start fresh" — clear the flag so
-    // ensureOccurrences resumes its two-period auto-fill. Without this the
-    // calendar would only ever show the explicitly-planned week, and the
-    // next-period "unassigned until you plan it" slots would never appear.
-    S.scheduleClearedAt = null;
+    // First wizard pass after "Start fresh" — drop the materialisation gate so
+    // ensureOccurrences resumes its two-period auto-fill. scheduleClearedAt is
+    // intentionally LEFT SET: it's a persistent timestamp the calendar uses to
+    // keep hiding pre-clear completion-history grey dots even after this save.
+    S.suppressInitialMaterialisation = false;
     wizardDraft = null;
     S.modal = null;
     save();
