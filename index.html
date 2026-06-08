@@ -505,12 +505,13 @@
       var c = S.chores[i];
       for(var d=new Date(from); d<=to; d=addDays(d,1)){
         // If the user planned this week's schedule via the wizard, don't let the
-        // template's natural isDue add back a date the user explicitly moved away from.
-        // Skip only the future part of the planned week — past days are settled.
+        // template's natural isDue add back ANY date in the week — including past
+        // days that the wizard moved away from. saveWizard authored the entire
+        // week's intended schedule, so anything missing inside that week is missing
+        // by design.
         var wkYmd = ymd(startOfWeek(d));
-        if(S.plannedWeeks[wkYmd] && d >= TODAY){
-          var key0 = occKey(c.id, d);
-          if(!S.occurrences[key0]) continue;
+        if(S.plannedWeeks[wkYmd]){
+          if(!S.occurrences[occKey(c.id, d)]) continue;
         }
         if(!isDue(c, d)) continue;
         var key = occKey(c.id, d);
@@ -619,8 +620,12 @@
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
-    // regenerate so the window stays full locally.
+    // regenerate so the window stays full locally. Also refresh derived state
+    // (streak personal bests, badge unlocks) so the partner's work shows on this
+    // phone immediately instead of waiting for the next local save().
     ensureOccurrences();
+    updateMaxStreaks();
+    evaluateBadges();
   }
 
   // Pull the shared document; adopt it if it is newer than what we last synced.
@@ -742,7 +747,9 @@
     }
     save();
     // After completing a cycle-style chore, ask which day to schedule the next one.
-    if(!wasUnmarking && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
+    // Linked chores inherit their schedule from a parent, so their own freq is moot —
+    // never prompt for them (the parent's completion is what owns the cycle).
+    if(!wasUnmarking && !ch.linkedAfter && (ch.freq === "Biweekly" || (ch.freq === "Monthly" && ch.startDate))){
       openWhenNext(ch, date);
     } else {
       render();
@@ -1140,12 +1147,11 @@
     // Delete every undone occurrence for any chore the wizard covered in the planning
     // range, then write the user's chosen (date, assignee) records and lock them.
     var touchedChores = {};
-    wizardDraft.rows.forEach(function(r){ touchedChores[r.chore.id] = true; });
+    wizardDraft.rows.forEach(function(r){ touchedChores[String(r.chore.id)] = true; });
     var fromKey = ymd(wizardDraft.rangeStart), toKey = ymd(wizardDraft.weekEnd);
     Object.keys(S.occurrences).forEach(function(key){
       var under = key.indexOf("_"); if(under < 0) return;
-      var chId = parseInt(key.slice(0, under), 10);
-      if(!touchedChores[chId]) return;
+      if(!touchedChores[key.slice(0, under)]) return; // string-compare on the raw key prefix
       var dStr = key.slice(under + 1);
       if(dStr < fromKey || dStr > toKey) return;
       var o = S.occurrences[key];
@@ -1808,11 +1814,18 @@
     var defaultDay = addDays(doneDate, cycleDays);
 
     function pick(date){
-      // Wipe future undone occurrences for this chore so the new schedule takes hold.
+      // Wipe future undone occurrences for this chore AND any chores linked after it
+      // (their schedule cascades through the parent, so moving the parent invalidates
+      // their existing materialised dates).
       var todayKey = ymd(TODAY);
+      var ids = {}; ids[String(ch.id)] = true;
+      S.chores.forEach(function(c){
+        if(c.linkedAfter && String(c.linkedAfter.taskId) === String(ch.id)) ids[String(c.id)] = true;
+      });
       Object.keys(S.occurrences).forEach(function(key){
-        if(key.indexOf(String(ch.id) + "_") !== 0) return;
-        var dStr = key.slice(String(ch.id).length + 1);
+        var under = key.indexOf("_"); if(under < 0) return;
+        if(!ids[key.slice(0, under)]) return;
+        var dStr = key.slice(under + 1);
         if(dStr <= todayKey) return;
         if(!S.occurrences[key].done) delete S.occurrences[key];
       });
@@ -1941,9 +1954,11 @@
     for(var d=new Date(TODAY); d<=to; d=addDays(d,1)){
       if(!isDue(c,d)) continue;
       var o=S.occurrences[occKey(c.id, d)];
-      if(!o || o.done) continue;
+      // Don't clobber occurrences the user has locked (wizard / per-occurrence pin).
+      // Editing the template's default assignee shouldn't undo intent expressed on
+      // a specific date.
+      if(!o || o.done || o.pinned) continue;
       o.assignee = c.assignee;
-      o.pinned   = !!c.pinned;
     }
   }
   function closeAdd(){ editingId=null; draftOriginal=null; S.modal=null; render(); }
