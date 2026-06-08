@@ -350,6 +350,7 @@
     maxStreaks: load("nh_maxStreaks", [0,0]),
     plannedWeeks: load("nh_plannedWeeks", {}),
     badgeBaselineDate: load("nh_badgeBaselineDate", null),
+    badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
@@ -389,6 +390,7 @@
     localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
     localStorage.setItem("nh_plannedWeeks",JSON.stringify(S.plannedWeeks));
     localStorage.setItem("nh_badgeBaselineDate", JSON.stringify(S.badgeBaselineDate));
+    localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
   function save(){
@@ -580,7 +582,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -595,6 +597,7 @@
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
     if(d.plannedWeeks&&typeof d.plannedWeeks==="object") S.plannedWeeks=d.plannedWeeks;
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
+    if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally.
@@ -878,6 +881,16 @@
   }
 
   function computeBadgeStats(){
+    // Stateful counts (rewards / redemptions / balance) need to ignore anything that
+    // already existed at the moment Reset was hit, otherwise the same badges
+    // re-unlock immediately. Filter rewards / redemptions by their own timestamps,
+    // and measure balance growth from the baseline snapshot.
+    var baseline = S.badgeBaselineDate || "";
+    var baselineISO = baseline ? baseline + "T00:00:00.000Z" : "";
+    var bb = S.badgeBaselineBalances || [0,0];
+    function afterBaseline(iso){ return baselineISO ? (iso || "") >= baselineISO : true; }
+    var rewardsSince = (S.rewards||[]).filter(function(r){ return afterBaseline(r.createdAt); });
+    var redemptionsSince = (S.redemptions||[]).filter(function(r){ return afterBaseline(r.redeemedAt); });
     var s = {
       totalDone:0, byDiff:{1:0,2:0,3:0},
       maxStreak: Math.max(S.maxStreaks[0]||0, S.maxStreaks[1]||0),
@@ -885,11 +898,11 @@
       helperTotal:0, helpsInBestWeek:0, helpsInBestDay:0,
       helpedOnWeekend:false, helpedBeforeNoon:false, helpedAfter9pm:false,
       teamPlayer:false,
-      redemptionCount: (S.redemptions||[]).length,
-      catalogCount: (S.rewards||[]).length,
-      maxRewardCost: (S.rewards||[]).reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0),
+      redemptionCount: redemptionsSince.length,
+      catalogCount: rewardsSince.length,
+      maxRewardCost: rewardsSince.reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0),
       maxDayEarning:0,
-      maxBalance: Math.max(S.balances[0]||0, S.balances[1]||0)
+      maxBalance: Math.max((S.balances[0]||0) - (bb[0]||0), (S.balances[1]||0) - (bb[1]||0))
     };
     var byId = {};
     S.chores.forEach(function(c){ byId[c.id]=c; });
@@ -965,6 +978,7 @@
     S.badges = {};
     S.maxStreaks = [0, 0];
     S.badgeBaselineDate = ymd(TODAY);
+    S.badgeBaselineBalances = [S.balances[0]||0, S.balances[1]||0];
     save();
     S.modal = null;
     render();
