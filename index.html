@@ -328,6 +328,7 @@
     rewards: load("nh_rewards", []),
     redemptions: load("nh_redemptions", []),
     badges: load("nh_badges", {}),
+    balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
     selectedWeekDay: TODAY.getDay(),
@@ -363,6 +364,7 @@
     localStorage.setItem("nh_rewards",JSON.stringify(S.rewards));
     localStorage.setItem("nh_redemptions",JSON.stringify(S.redemptions));
     localStorage.setItem("nh_badges",JSON.stringify(S.badges));
+    if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
   function save(){ ensureOccurrences(); saveLocal(); pushState(); }
 
@@ -374,6 +376,74 @@
   // On first run after the new build, doneLog completions get folded into the
   // matching occurrences so history shows the right person without back-filling.
   function occKey(choreId, date){ return choreId+"_"+ymd(date); }
+  // One-shot: seed Purr balances from historical doneLog the first time this build
+  // runs, so users who've been completing tasks for weeks don't start at zero.
+  function migrateBalancesOnce(){
+    if(S.balancesMigratedAt) return;
+    if(!S.doneLog || !S.chores) { S.balancesMigratedAt = Date.now(); return; }
+    S.balances = [0, 0];
+    var byId = {};
+    S.chores.forEach(function(c){ byId[c.id] = c; });
+    Object.keys(S.doneLog).forEach(function(key){
+      var underscore = key.indexOf("_");
+      if(underscore < 0) return;
+      var chId = parseInt(key.slice(0, underscore), 10);
+      var who  = S.doneLog[key];
+      var c = byId[chId];
+      if(c && (who === 0 || who === 1)) S.balances[who] += effortOf(c);
+    });
+    // Subtract any redemptions that were already on the doc.
+    if(Array.isArray(S.redemptions)){
+      S.redemptions.forEach(function(r){
+        if(r && (r.by === 0 || r.by === 1) && typeof r.rewardCost === "number"){
+          S.balances[r.by] -= r.rewardCost;
+        }
+      });
+    }
+    S.balancesMigratedAt = Date.now();
+  }
+
+  // ---------- rewards catalog + redemptions (Phase 3) ----------
+  function addReward(name, cost){
+    var c = Math.max(1, parseInt(cost, 10) || 1);
+    S.rewards.push({
+      id: Date.now(),
+      name: String(name).trim(),
+      cost: c,
+      addedBy: myEmail() || S.names[S.deviceUser],
+      createdAt: new Date().toISOString()
+    });
+    save();
+  }
+  function updateReward(r, name, cost){
+    r.name = String(name).trim();
+    r.cost = Math.max(1, parseInt(cost, 10) || 1);
+    save();
+  }
+  function deleteReward(r){
+    var i = S.rewards.indexOf(r);
+    if(i >= 0){ S.rewards.splice(i, 1); save(); render(); }
+  }
+  function redeemReward(r){
+    var p = S.deviceUser;
+    if(p !== 0 && p !== 1) p = 0; // safety default
+    if(S.balances[p] < r.cost){
+      alert(S.names[p] + " has " + S.balances[p] + " Purrs but needs " + r.cost + ".");
+      return;
+    }
+    if(!confirm("Redeem '" + r.name + "' for " + r.cost + " Purrs? " + S.names[p] + " will have " + (S.balances[p] - r.cost) + " left.")) return;
+    S.balances[p] -= r.cost;
+    S.redemptions.push({
+      id: Date.now(),
+      rewardId: r.id,
+      rewardName: r.name,
+      rewardCost: r.cost,
+      by: p,
+      redeemedAt: new Date().toISOString()
+    });
+    save(); render();
+  }
+
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
     var from = addDays(startOfWeek(TODAY), -7);
@@ -470,7 +540,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges }; }
+  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -482,6 +552,7 @@
     if(Array.isArray(d.rewards)) S.rewards=d.rewards;
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
+    if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally.
     ensureOccurrences();
@@ -586,14 +657,19 @@
   function toggleDone(ch, date){
     var o = ensureOcc(ch, date);
     var key = occKey(ch.id, date);
+    var pts = effortOf(ch);
     if(o.done){
+      // Unmark: refund the credited person.
+      if(o.assignee === 0 || o.assignee === 1) S.balances[o.assignee] -= pts;
       o.done = false; o.doneAt = null;
       if(S.doneLog) delete S.doneLog[key];
     } else {
+      // Mark done: credit the assignee + drop the lock.
       o.done = true;
       o.doneAt = new Date().toISOString();
-      o.pinned = false; // lock drops automatically when the occurrence is completed
+      o.pinned = false;
       if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] += pts;
         if(!S.doneLog) S.doneLog = {};
         S.doneLog[key] = o.assignee;
       }
@@ -602,10 +678,18 @@
   }
   function cycleOccAssignee(ch, date){
     var o = ensureOcc(ch, date);
+    var prev = o.assignee;
     o.assignee = o.assignee == null ? 0 : (o.assignee === 0 ? 1 : null);
-    if(o.done && (o.assignee === 0 || o.assignee === 1)){
-      // Keep doneLog accurate if the user re-assigns an already-done occurrence.
-      S.doneLog[occKey(ch.id, date)] = o.assignee;
+    if(o.done){
+      // Transfer the credit when an already-done occurrence is re-assigned.
+      var pts = effortOf(ch);
+      if(prev === 0 || prev === 1) S.balances[prev] -= pts;
+      if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] += pts;
+        S.doneLog[occKey(ch.id, date)] = o.assignee;
+      } else {
+        delete S.doneLog[occKey(ch.id, date)];
+      }
     }
     save(); render();
   }
@@ -997,6 +1081,56 @@
     bdCard.appendChild(bd);
     wrap.appendChild(bdCard);
 
+    // ---------- Rewards (Phase 3) ----------
+    wrap.appendChild(h("div",{class:"section-title", text:"Rewards"}));
+    var rwCard = h("div",{class:"vs-card"});
+    // Per-person Purr balances
+    var balRow = h("div",{style:"display:flex;justify-content:space-around;gap:12px;margin-bottom:8px;"});
+    [0,1].forEach(function(p){
+      balRow.appendChild(h("div",{style:"flex:1;text-align:center;padding:10px 4px;border-radius:10px;background:"+PC[p].c+"22;"},
+        h("div",{style:"font-size:12px;font-weight:700;color:"+PC[p].c, text:S.names[p]}),
+        h("div",{style:"font-size:20px;font-weight:800;margin-top:2px;color:"+PC[p].c, text:S.balances[p]+" Purrs"})
+      ));
+    });
+    rwCard.appendChild(balRow);
+    // Reward catalog
+    if(!S.rewards.length){
+      rwCard.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:14px 0 6px;", text:"No rewards yet. Add one!"}));
+    } else {
+      S.rewards.forEach(function(r){
+        rwCard.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--border);"},
+          h("div",{style:"flex:1;min-width:0;cursor:pointer;", onClick:function(){ openReward(r); }},
+            h("div",{style:"font-weight:600;font-size:14.5px;", text:r.name}),
+            h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:2px;", text:r.cost+" Purrs"})
+          ),
+          h("button",{class:"btn primary", style:"flex:none;padding:8px 14px;font-size:13px;border-radius:18px;width:auto;",
+            onClick:function(e){ e.stopPropagation(); redeemReward(r); }, text:"Redeem"})
+        ));
+      });
+    }
+    rwCard.appendChild(h("button",{
+      style:"width:100%;margin-top:14px;padding:10px;border:1.5px dashed var(--border);border-radius:11px;background:transparent;color:var(--muted);font:inherit;font-weight:700;cursor:pointer;",
+      onClick:function(){ openReward(); }, text:"+ Add reward"
+    }));
+    wrap.appendChild(rwCard);
+
+    // Recent redemptions log (most recent 5)
+    if(S.redemptions.length){
+      wrap.appendChild(h("div",{class:"section-title", text:"Recent redemptions"}));
+      var logCard = h("div",{class:"vs-card"});
+      var log = S.redemptions.slice().sort(function(a,b){ return (b.id||0)-(a.id||0); }).slice(0,5);
+      log.forEach(function(red, i){
+        logCard.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;padding:9px 0;"+(i<log.length-1?"border-bottom:1px solid var(--border);":"")},
+          h("div",{style:"flex:1;min-width:0;"},
+            h("div",{style:"font-weight:600;font-size:14px;", text:red.rewardName}),
+            h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:2px;", text:S.names[red.by]+" · "+formatWhen(red.redeemedAt)})
+          ),
+          h("div",{style:"font-weight:700;font-size:13px;color:"+PC[red.by].c, text:"-"+red.rewardCost})
+        ));
+      });
+      wrap.appendChild(logCard);
+    }
+
     // "Meet the Olympaws" — small decorative card; each cat is a popup voice elsewhere.
     wrap.appendChild(h("div",{class:"section-title", text:"Meet the Olympaws"}));
     var catsCard=h("div",{class:"vs-card", style:"padding:16px 12px;"});
@@ -1012,6 +1146,50 @@
     catsCard.appendChild(row);
     wrap.appendChild(catsCard);
     return wrap;
+  }
+
+  // ---------- reward modal (add / edit) ----------
+  var rewardDraft = null, rewardEditing = null;
+  function openReward(r){
+    rewardEditing = (r && typeof r==="object" && "id" in r && "cost" in r) ? r : null;
+    rewardDraft = rewardEditing
+      ? { name: rewardEditing.name, cost: String(rewardEditing.cost) }
+      : { name: "", cost: "10" };
+    S.modal = "reward"; render();
+  }
+  function modalReward(){
+    function field(label, input){ return h("div",{class:"field"}, h("label",{text:label}), input); }
+    var d = rewardDraft, editing = !!rewardEditing;
+    var nameIn = h("input",{type:"text", placeholder:"e.g. Pick dinner", value:d.name, onInput:function(e){ d.name=e.target.value; }});
+    var costIn = h("input",{type:"number", min:"1", value:d.cost, onInput:function(e){ d.cost=e.target.value; }});
+    function commit(){
+      if(!d.name.trim()) return;
+      if(editing) updateReward(rewardEditing, d.name, d.cost);
+      else addReward(d.name, d.cost);
+      S.modal = null; rewardEditing = null; render();
+    }
+    var children = [
+      h("h3",{text: editing ? "Edit reward" : "New reward"}),
+      field("What", nameIn),
+      field("Cost (Purrs)", costIn),
+      h("div",{class:"modal-actions"},
+        h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; rewardEditing=null; render(); }}),
+        h("button",{class:"btn primary", text: editing ? "Save" : "Add", onClick: commit})
+      )
+    ];
+    if(editing){
+      children.push(h("button",{
+        style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;",
+        onClick:function(){
+          if(!confirm("Delete \""+rewardEditing.name+"\"?")) return;
+          deleteReward(rewardEditing);
+          S.modal = null; rewardEditing = null; render();
+        },
+        text:"🗑 Delete reward"
+      }));
+    }
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; rewardEditing=null; render(); } }},
+      h("div",{class:"modal"}, children));
   }
 
   // Shared cat metadata — used by the "Meet the Olympaws" card AND the zoom modal.
@@ -1477,12 +1655,14 @@
     if(S.modal==="reminder") root.appendChild(modalReminder());
     if(S.modal==="calexport") root.appendChild(modalCalExport());
     if(S.modal==="cat") root.appendChild(modalCat());
+    if(S.modal==="reward") root.appendChild(modalReward());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
   captureAuthFromHash();
   maybeWeeklySnapshot();
   ensureOccurrences();
+  migrateBalancesOnce();
   render();
   if(isAuthed()) pullState();
   setInterval(function(){ if(isAuthed() && document.visibilityState!=="hidden") pullState(); }, 10000);
