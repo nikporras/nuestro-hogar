@@ -10,7 +10,7 @@
  *  - Non-GET requests are never touched.
  */
 
-const CACHE = "nuestro-hogar-v45";
+const CACHE = "nuestro-hogar-v46";
 
 // The app shell. Keep this list explicit — only known static assets.
 const SHELL = [
@@ -22,7 +22,8 @@ const SHELL = [
   "./icons/cats/atena.png",
   "./icons/cats/thor.png",
   "./icons/cats/rum.png",
-  "./icons/purr.png"
+  "./icons/purr.png",
+  "./icons/streak.png"
 ];
 
 self.addEventListener("install", (event) => {

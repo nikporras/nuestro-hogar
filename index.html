@@ -813,16 +813,16 @@
       {id:"legend",       cat:"Completion", icon:"🏆", name:"Legend",        desc:"5,000 tasks done.",                check:function(s){return s.totalDone>=5000;}},
       {id:"mythic",       cat:"Completion", icon:"🌟", name:"Mythic",        desc:"10,000 tasks done.",               check:function(s){return s.totalDone>=10000;}},
       // Streaks
-      {id:"sparkStreak",  cat:"Streak", icon:"🔥", name:"Spark Streak",   desc:"3-day streak.",   check:function(s){return s.maxStreak>=3;}},
-      {id:"lucky7",       cat:"Streak", icon:"🔥", name:"Lucky 7",        desc:"7-day streak.",   check:function(s){return s.maxStreak>=7;}},
-      {id:"fortnight",    cat:"Streak", icon:"🔥", name:"Fortnight",      desc:"14-day streak.",  check:function(s){return s.maxStreak>=14;}},
-      {id:"monthly",      cat:"Streak", icon:"🔥", name:"Monthly",        desc:"30-day streak.",  check:function(s){return s.maxStreak>=30;}},
-      {id:"hot50",        cat:"Streak", icon:"🔥", name:"Hot 50",         desc:"50-day streak.",  check:function(s){return s.maxStreak>=50;}},
-      {id:"quarter",      cat:"Streak", icon:"🔥", name:"Quarter",        desc:"90-day streak.",  check:function(s){return s.maxStreak>=90;}},
-      {id:"hot100",       cat:"Streak", icon:"🔥", name:"Hot 100",        desc:"100-day streak.", check:function(s){return s.maxStreak>=100;}},
-      {id:"halfYear",     cat:"Streak", icon:"🔥", name:"Half-year",      desc:"180-day streak.", check:function(s){return s.maxStreak>=180;}},
-      {id:"untouchable",  cat:"Streak", icon:"🔥", name:"Untouchable",    desc:"200-day streak.", check:function(s){return s.maxStreak>=200;}},
-      {id:"annual",       cat:"Streak", icon:"🔥", name:"Annual",         desc:"365-day streak.", check:function(s){return s.maxStreak>=365;}},
+      {id:"sparkStreak",  cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Spark Streak",   desc:"3-day streak.",   check:function(s){return s.maxStreak>=3;}},
+      {id:"lucky7",       cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Lucky 7",        desc:"7-day streak.",   check:function(s){return s.maxStreak>=7;}},
+      {id:"fortnight",    cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Fortnight",      desc:"14-day streak.",  check:function(s){return s.maxStreak>=14;}},
+      {id:"monthly",      cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Monthly",        desc:"30-day streak.",  check:function(s){return s.maxStreak>=30;}},
+      {id:"hot50",        cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Hot 50",         desc:"50-day streak.",  check:function(s){return s.maxStreak>=50;}},
+      {id:"quarter",      cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Quarter",        desc:"90-day streak.",  check:function(s){return s.maxStreak>=90;}},
+      {id:"hot100",       cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Hot 100",        desc:"100-day streak.", check:function(s){return s.maxStreak>=100;}},
+      {id:"halfYear",     cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Half-year",      desc:"180-day streak.", check:function(s){return s.maxStreak>=180;}},
+      {id:"untouchable",  cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Untouchable",    desc:"200-day streak.", check:function(s){return s.maxStreak>=200;}},
+      {id:"annual",       cat:"Streak", icon:"🔥", img:"./icons/streak.png", name:"Annual",         desc:"365-day streak.", check:function(s){return s.maxStreak>=365;}},
       // Effort / difficulty
       {id:"firstHeavy",   cat:"Effort", icon:"🏋️", name:"First Heavy",   desc:"First difficulty-3 task done.",  check:function(s){return s.byDiff[3]>=1;}},
       {id:"heavyLifter",  cat:"Effort", icon:"🏋️", name:"Heavy Lifter",  desc:"10 difficulty-3 tasks done.",    check:function(s){return s.byDiff[3]>=10;}},
@@ -1315,13 +1315,21 @@
     [0,1].forEach(function(p){
       var pct = total? Math.round(counts[p]/total*100) : 0;
       var streak = computeStreak(p);
+      var statsLine = h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"},
+        h("span",{text: counts[p]+" pts done"})
+      );
+      if(streak > 0){
+        statsLine.appendChild(h("span",{text:"·"}));
+        statsLine.appendChild(h("img",{src:"./icons/streak.png", alt:"streak", style:"width:14px;height:14px;"}));
+        statsLine.appendChild(h("span",{text: streak+"-day streak"}));
+      }
       card.appendChild(h("div",{class:"vs-row"},
         h("div",{class:"vs-top"},
           h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
           h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:pct+"%"})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c})),
-        h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;", text:counts[p]+" pts done"+(streak>0 ? "  ·  🔥 "+streak+"-day streak" : "")})
+        statsLine
       ));
     });
     wrap.appendChild(card);
@@ -1411,9 +1419,17 @@
     var grid = h("div",{style:"display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"});
     defs.forEach(function(b){
       var got = !!S.badges[b.id];
+      var iconEl;
+      if(!got){
+        iconEl = h("div",{style:"font-size:30px;", text:"🔒"});
+      } else if(b.img){
+        iconEl = h("img",{src:b.img, alt:b.name, style:"width:34px;height:34px;display:block;margin:0 auto;"});
+      } else {
+        iconEl = h("div",{style:"font-size:30px;", text:b.icon});
+      }
       var cell = h("div",{style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";", onClick:function(){ openBadge(b); }},
-        h("div",{style:"font-size:30px;filter:"+(got?"none":"grayscale(0.6)"), text:got ? b.icon : "🔒"}),
-        h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:2px;line-height:1.2;", text:got ? b.name : "Locked"})
+        iconEl,
+        h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:4px;line-height:1.2;", text:got ? b.name : "Locked"})
       );
       grid.appendChild(cell);
     });
@@ -1547,9 +1563,13 @@
     var b = badgeView;
     var got = S.badges[b.id];
     var unlockedAt = got ? formatWhen(got) : null;
+    var bigIcon;
+    if(!got) bigIcon = h("div",{style:"font-size:74px;opacity:0.4;", text:"🔒"});
+    else if(b.img) bigIcon = h("img",{src:b.img, alt:b.name, style:"width:96px;height:96px;display:block;margin:0 auto;"});
+    else bigIcon = h("div",{style:"font-size:74px;", text:b.icon});
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; badgeView=null; render(); } }},
       h("div",{class:"modal", style:"text-align:center;padding:26px 18px 30px;"},
-        h("div",{style:"font-size:74px;opacity:"+(got?"1":"0.4")+";filter:"+(got?"none":"grayscale(0.6)")+";", text:got ? b.icon : "🔒"}),
+        bigIcon,
         h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: got ? b.name : "Locked"}),
         h("div",{style:"color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.16em;font-weight:700;margin-bottom:8px;", text:b.cat}),
         h("div",{style:"font-size:14px;color:var(--text);margin-bottom:10px;", text:b.desc}),
@@ -2002,10 +2022,10 @@
     var bal = S.balances && (S.balances[p] != null) ? S.balances[p] : 0;
     var wrap = h("div",{class:"topbar"});
     var chip = h("button",{class:"topchip", onClick:function(){ S.tab="logros"; render(); }},
-      h("span",{text:"🔥"}),
+      h("img",{src:"./icons/streak.png", alt:"streak", style:"width:18px;height:18px;"}),
       h("span",{text:String(streak)}),
       h("span",{class:"sep"}),
-      h("img",{src:"./icons/purr.png", alt:"Purrs"}),
+      h("img",{src:"./icons/purr.png", alt:"Purrs", style:"width:14px;height:14px;"}),
       h("span",{text:String(bal)})
     );
     wrap.appendChild(chip);
