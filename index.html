@@ -1301,17 +1301,22 @@
     var total=counts[0]+counts[1];
     var leader = counts[0]===counts[1] ? -1 : (counts[0]>counts[1]?0:1);
 
-    // trophy + couple level
-    var trophy=h("div",{class:"trophy"});
-    if(total===0){ trophy.appendChild(h("span",{class:"big",text:"🌱"})); trophy.appendChild(document.createTextNode("Nothing done yet")); }
-    else if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("Tie! "+counts[0]+" – "+counts[1])); }
-    else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" is ahead")); }
+    // Big Olympaws House level header — cooperative framing replaces the leader trophy.
     var lvl = coupleLevelInfo();
-    trophy.appendChild(h("div",{style:"margin-top:8px;font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.04em;",
-      text:"Home · Level "+lvl.level+(lvl.level<999 ? " · "+lvl.toNext+" pts to L"+(lvl.level+1) : "")
-    }));
+    var prevThreshold = lvl.level * lvl.level * 25;
+    var span = Math.max(1, lvl.nextThreshold - prevThreshold);
+    var into = Math.max(0, lvl.total - prevThreshold);
+    var progressPct = Math.min(100, Math.round(into / span * 100));
+    var levelCard = h("div",{class:"vs-card", style:"text-align:center;padding:22px 18px 20px;"},
+      h("img",{src:"./icons/level.png", alt:"Olympaws House", style:"width:120px;height:120px;display:block;margin:0 auto 6px;"}),
+      h("div",{style:"font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:var(--muted);font-weight:700;", text:"Olympaws House"}),
+      h("div",{style:"font-size:30px;font-weight:800;margin-top:2px;", text:"Level "+lvl.level}),
+      h("div",{class:"vs-bar", style:"margin-top:14px;"}, h("div",{class:"vs-fill", style:"width:"+progressPct+"%;background:linear-gradient(135deg,var(--accent1),var(--accent2));"})),
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:600;margin-top:8px;", text: lvl.toNext+" pts to Level "+(lvl.level+1)})
+    );
+    wrap.appendChild(levelCard);
 
-    var card=h("div",{class:"vs-card"}, trophy);
+    var card=h("div",{class:"vs-card"});
     [0,1].forEach(function(p){
       var pct = total? Math.round(counts[p]/total*100) : 0;
       var streak = computeStreak(p);
@@ -1410,30 +1415,50 @@
       wrap.appendChild(logCard);
     }
 
-    // ---------- Badges (Phase 5) ----------
+    // ---------- Badges (Phase 5 + collapse/expand) ----------
     var defs = badgeDefs();
     var unlockedCount = 0;
     defs.forEach(function(b){ if(S.badges[b.id]) unlockedCount++; });
+    // Sorted unlocked badges, newest first; the rest in their natural category order.
+    var unlockedSorted = defs.filter(function(b){ return S.badges[b.id]; })
+      .map(function(b){ return { def:b, at:S.badges[b.id] }; })
+      .sort(function(a,b){ return String(b.at).localeCompare(String(a.at)); })
+      .map(function(x){ return x.def; });
+    var lockedInOrder = defs.filter(function(b){ return !S.badges[b.id]; });
+    var visible = badgesExpanded ? unlockedSorted.concat(lockedInOrder) : unlockedSorted.slice(0,5);
+
     wrap.appendChild(h("div",{class:"section-title", text:"Badges  ("+unlockedCount+" / "+defs.length+")"}));
-    var bCard = h("div",{class:"vs-card", style:"padding:14px 12px;"});
-    var grid = h("div",{style:"display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"});
-    defs.forEach(function(b){
-      var got = !!S.badges[b.id];
-      var iconEl;
-      if(!got){
-        iconEl = h("div",{style:"font-size:30px;", text:"🔒"});
-      } else if(b.img){
-        iconEl = h("img",{src:b.img, alt:b.name, style:"width:34px;height:34px;display:block;margin:0 auto;"});
-      } else {
-        iconEl = h("div",{style:"font-size:30px;", text:b.icon});
-      }
-      var cell = h("div",{style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";", onClick:function(){ openBadge(b); }},
-        iconEl,
-        h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:4px;line-height:1.2;", text:got ? b.name : "Locked"})
-      );
-      grid.appendChild(cell);
+    var bCard = h("div",{class:"vs-card", style:"padding:14px 12px;cursor:pointer;",
+      onClick: function(e){ if(e.target.tagName !== "BUTTON" && !e.target.closest || !e.target.closest(".badge-cell-noexpand")){ badgesExpanded = !badgesExpanded; render(); } }
     });
+    var cols = badgesExpanded ? 4 : Math.max(1, Math.min(5, visible.length));
+    var grid = h("div",{style:"display:grid;grid-template-columns:repeat("+cols+",1fr);gap:10px;"});
+    if(visible.length === 0){
+      grid.appendChild(h("div",{style:"grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:8px 0;", text:"No badges yet — tap to see what's available."}));
+    } else {
+      visible.forEach(function(b){
+        var got = !!S.badges[b.id];
+        var iconEl;
+        if(!got){
+          iconEl = h("div",{style:"font-size:30px;", text:"🔒"});
+        } else if(b.img){
+          iconEl = h("img",{src:b.img, alt:b.name, style:"width:34px;height:34px;display:block;margin:0 auto;"});
+        } else {
+          iconEl = h("div",{style:"font-size:30px;", text:b.icon});
+        }
+        var cell = h("div",{class:"badge-cell-noexpand", style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";",
+          onClick:function(e){ e.stopPropagation(); openBadge(b); }
+        },
+          iconEl,
+          h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:4px;line-height:1.2;", text:got ? b.name : "Locked"})
+        );
+        grid.appendChild(cell);
+      });
+    }
     bCard.appendChild(grid);
+    bCard.appendChild(h("div",{style:"text-align:center;font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.08em;margin-top:12px;text-transform:uppercase;",
+      text: badgesExpanded ? "Tap to collapse" : "Tap to see all " + defs.length
+    }));
     wrap.appendChild(bCard);
 
     // "Meet the Olympaws" — small decorative card; each cat is a popup voice elsewhere.
@@ -1496,6 +1521,9 @@
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; rewardEditing=null; render(); } }},
       h("div",{class:"modal"}, children));
   }
+
+  // UI-only toggle for the Badges card: top 5 by default, full grid on tap.
+  var badgesExpanded = false;
 
   // ---------- "When next?" picker for Biweekly / cycle-Monthly (Phase 6) ----------
   var whenNextCtx = null;
