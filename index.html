@@ -600,6 +600,7 @@
       by: p,
       redeemedAt: new Date().toISOString()
     });
+    queueCatPopup("thor", "Redeemed!", S.names[p] + " spent " + r.cost + " Purrs on " + r.name + ".");
     save(); render();
   }
 
@@ -1421,7 +1422,11 @@
     var newlyUnlocked = [];
     defs.forEach(function(b){
       if(S.badges[b.id]) return;
-      if(b.check(stats)){ S.badges[b.id] = now; newlyUnlocked.push(b); }
+      if(b.check(stats)){
+        S.badges[b.id] = now;
+        newlyUnlocked.push(b);
+        queueCatPopup("atena", "Badge unlocked!", b.icon + "  " + b.name + " — " + b.desc);
+      }
     });
     return newlyUnlocked;
   }
@@ -2462,6 +2467,34 @@
     { name:"Thor",  role:"The Messenger", img:"./icons/cats/thor.png"  },
     { name:"Rum",   role:"The Muse",      img:"./icons/cats/rum.png"   }
   ];
+  var CAT_BY = {};
+  CATS.forEach(function(c){ CAT_BY[c.name.toLowerCase()] = c; });
+  // In-app popup queue: a cat appears for each event (Atena = badges,
+  // Thor = redemptions, Rum = earnings) and the user dismisses one at a time.
+  // Lives outside S because it's transient device-local UI state.
+  var catPopupQueue = [];
+  function queueCatPopup(catName, title, body){
+    catPopupQueue.push({ cat:String(catName||"atena").toLowerCase(), title:title, body:body });
+    if(!S.modal){ S.modal = "catPopup"; }
+  }
+  function dismissCatPopup(){
+    catPopupQueue.shift();
+    if(catPopupQueue.length === 0) S.modal = null;
+    render();
+  }
+  function modalCatPopup(){
+    if(catPopupQueue.length === 0) return h("div");
+    var p = catPopupQueue[0];
+    var cat = CAT_BY[p.cat] || CATS[0];
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay") dismissCatPopup(); }},
+      h("div",{class:"modal", style:"text-align:center;padding:22px 18px 26px;"},
+        h("img",{src:cat.img, alt:cat.name, style:"width:140px;height:140px;border-radius:50%;display:block;margin:0 auto 10px;"}),
+        h("div",{style:"font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.15em;font-weight:700;margin-bottom:8px;", text:cat.name + " · " + cat.role}),
+        h("h3",{style:"margin:0 0 6px;font-size:18px;", text:p.title}),
+        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:18px;line-height:1.4;", text:p.body}),
+        h("button",{class:"btn primary", style:"width:80%;margin:0 auto;display:block;", onClick:dismissCatPopup, text:"Got it"})
+      ));
+  }
   var catView = null;
   function openCat(c){ catView = c; S.modal = "cat"; render(); }
   function modalCat(){
@@ -3025,6 +3058,7 @@
     if(S.modal==="reminder") root.appendChild(modalReminder());
     if(S.modal==="calexport") root.appendChild(modalCalExport());
     if(S.modal==="cat") root.appendChild(modalCat());
+    if(S.modal==="catPopup") root.appendChild(modalCatPopup());
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
     if(S.modal==="whenNext") root.appendChild(modalWhenNext());
