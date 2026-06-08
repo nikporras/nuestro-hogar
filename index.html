@@ -1592,6 +1592,7 @@
     wizardDraft = null;
     S.modal = null;
     save();
+    render(); // save() doesn't re-render, so the modal would stay open visually
   }
   function closeWizard(){ wizardDraft = null; S.modal = null; render(); }
 
