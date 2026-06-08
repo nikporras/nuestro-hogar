@@ -554,66 +554,62 @@
     return log;
   }
 
-  // ---------- done helpers ----------
-  function isDone(ch,date){ return Object.prototype.hasOwnProperty.call(S.doneLog, ch.id+"_"+ymd(date)); }
-  function toggleDone(ch,date){
-    var key=ch.id+"_"+ymd(date);
-    if(Object.prototype.hasOwnProperty.call(S.doneLog,key)) delete S.doneLog[key];
-    else S.doneLog[key]=ch.assignee;
+  // ---------- per-occurrence helpers (Phase 2) ----------
+  // Reads prefer the occurrence record; for dates outside the materialised window
+  // we fall back to doneLog + template defaults so older history still renders.
+  function occ(ch, date){ return S.occurrences ? S.occurrences[occKey(ch.id, date)] : undefined; }
+  function isDone(ch, date){
+    var o = occ(ch, date);
+    if(o) return !!o.done;
+    return Object.prototype.hasOwnProperty.call(S.doneLog||{}, ch.id+"_"+ymd(date));
+  }
+  function occAssignee(ch, date){
+    var o = occ(ch, date);
+    if(o) return o.assignee;
+    var key = ch.id+"_"+ymd(date);
+    if(S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, key)) return S.doneLog[key];
+    return ch.assignee;
+  }
+  function occPinned(ch, date){
+    var o = occ(ch, date);
+    return o ? !!o.pinned : !!ch.pinned;
+  }
+  // Writes always go to the occurrence record; doneLog is kept in sync so older
+  // code paths (stats, snapshots) keep working until they're migrated too.
+  function ensureOcc(ch, date){
+    var key = occKey(ch.id, date);
+    if(!S.occurrences[key]){
+      S.occurrences[key] = { assignee:ch.assignee, done:false, doneAt:null, pinned:!!ch.pinned };
+    }
+    return S.occurrences[key];
+  }
+  function toggleDone(ch, date){
+    var o = ensureOcc(ch, date);
+    var key = occKey(ch.id, date);
+    if(o.done){
+      o.done = false; o.doneAt = null;
+      if(S.doneLog) delete S.doneLog[key];
+    } else {
+      o.done = true;
+      o.doneAt = new Date().toISOString();
+      o.pinned = false; // lock drops automatically when the occurrence is completed
+      if(o.assignee === 0 || o.assignee === 1){
+        if(!S.doneLog) S.doneLog = {};
+        S.doneLog[key] = o.assignee;
+      }
+    }
+    save(); render();
+  }
+  function cycleOccAssignee(ch, date){
+    var o = ensureOcc(ch, date);
+    o.assignee = o.assignee == null ? 0 : (o.assignee === 0 ? 1 : null);
+    if(o.done && (o.assignee === 0 || o.assignee === 1)){
+      // Keep doneLog accurate if the user re-assigns an already-done occurrence.
+      S.doneLog[occKey(ch.id, date)] = o.assignee;
+    }
     save(); render();
   }
 
-  // ---------- period helpers ----------
-  // The "current period" for a chore — once every scheduled occurrence inside it is done,
-  // the chore is auto-unlocked so the next Shuffle can move it.
-  function currentPeriodRange(c){
-    if(c.freq==="Daily" && (!c.weekdays || c.weekdays.length===0)){
-      return { start:new Date(TODAY), end:new Date(TODAY) };
-    }
-    if(c.freq==="Daily" || c.freq==="Weekly"){
-      var wk=startOfWeek(TODAY);
-      return { start:wk, end:addDays(wk,6) };
-    }
-    if(c.freq==="Biweekly"){
-      if(!c.startDate) return null;
-      var p=String(c.startDate).split("-");
-      var a=new Date(+p[0],(+p[1])-1,+p[2]); a.setHours(0,0,0,0);
-      var diff=daysBetween(a,TODAY);
-      if(diff<0) return null;
-      var s=addDays(a, Math.floor(diff/14)*14);
-      return { start:s, end:addDays(s,13) };
-    }
-    if(c.freq==="Monthly"){
-      if(c.startDate){
-        var p2=String(c.startDate).split("-");
-        var a2=new Date(+p2[0],(+p2[1])-1,+p2[2]); a2.setHours(0,0,0,0);
-        var diff2=daysBetween(a2,TODAY);
-        if(diff2<0) return null;
-        var s2=addDays(a2, Math.floor(diff2/28)*28);
-        return { start:s2, end:addDays(s2,27) };
-      }
-      var first=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
-      var last=new Date(TODAY.getFullYear(),TODAY.getMonth()+1,0);
-      return { start:first, end:last };
-    }
-    return null;
-  }
-  // True if there was at least one occurrence in this period AND all of them are done.
-  function periodIsComplete(c){
-    var range=currentPeriodRange(c);
-    if(!range) return false;
-    var any=false;
-    for(var d=new Date(range.start); d<=range.end; d=addDays(d,1)){
-      if(isDue(c,d)){
-        any=true;
-        if(!isDone(c,d)) return false;
-      }
-    }
-    return any;
-  }
-  // What the rest of the app should treat as "locked right now" — auto-unlocks once the
-  // current period is fully completed.
-  function effectivelyPinned(c){ return !!c.pinned && !periodIsComplete(c); }
   function choresForDay(date){
     return S.chores.filter(function(c){
       if(!isDue(c,date)) return false;
@@ -647,21 +643,32 @@
     S.chores.forEach(function(c){ if(c.assignee===0||c.assignee===1) t[c.assignee]+=effortOf(c); });
     return t;
   }
-  // Deal out the unlocked tasks (and any whose current period is already fully done)
-  // so both people end up with as equal a total effort as possible, then re-lock each
-  // task to its person. A task auto-unlocks once every occurrence in its current period
-  // (this week / this 2-week cycle / this 4-week cycle / this month) is marked done —
-  // which is when Shuffle becomes able to move it again.
+  // Deal out every upcoming non-done, non-locked occurrence in the next 14 days so
+  // total effort ends up balanced across both people. Done/locked occurrences count
+  // toward the running totals and aren't touched. Each newly-shuffled occurrence is
+  // locked to its new person; the lock drops automatically when the occurrence is
+  // marked done. The template's default assignee is left alone — it just supplies
+  // the starting person for occurrences materialised in the future.
   function shuffleAssignments(){
-    var totals=[0,0];
-    S.chores.forEach(function(c){ if(effectivelyPinned(c) && (c.assignee===0||c.assignee===1)){ totals[c.assignee]+=effortOf(c); } });
-    var pool=S.chores.filter(function(c){ return !effectivelyPinned(c); });
-    if(!pool.length){ alert("Nothing to shuffle — every task is locked to someone for this period. Mark this period's tasks done or unlock a task from its settings."); return; }
+    var totals=[0,0]; var pool=[];
+    var from=new Date(TODAY); var to=addDays(TODAY,14);
+    S.chores.forEach(function(c){
+      for(var d=new Date(from); d<=to; d=addDays(d,1)){
+        if(!isDue(c,d)) continue;
+        var o = ensureOcc(c, d);
+        if(o.done || o.pinned){
+          if(o.assignee===0||o.assignee===1) totals[o.assignee]+=effortOf(c);
+        } else {
+          pool.push({chore:c, occ:o});
+        }
+      }
+    });
+    if(!pool.length){ alert("Nothing to shuffle — every upcoming task is done or locked."); return; }
     for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
-    pool.forEach(function(c){
+    pool.forEach(function(p){
       var who = totals[0]<totals[1] ? 0 : (totals[1]<totals[0] ? 1 : (Math.random()<0.5?0:1));
-      c.assignee=who; totals[who]+=effortOf(c);
-      c.pinned=true;
+      p.occ.assignee = who; p.occ.pinned = true;
+      totals[who] += effortOf(p.chore);
     });
     save(); render();
   }
@@ -688,18 +695,21 @@
 
   // ---------- components ----------
   function choreCard(ch, date){
-    var done=isDone(ch,date);
-    var eff=effortOf(ch);
+    var done = isDone(ch, date);
+    var eff  = effortOf(ch);
+    var who  = occAssignee(ch, date);
+    var lock = occPinned(ch, date);
     return h("div",{class:"card"+(done?" done":"")},
       h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(effectivelyPinned(ch)?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(lock?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pColor(ch.assignee), text:pName(ch.assignee),
-            onClick: effectivelyPinned(ch) ? function(){ openEdit(ch); } : function(){ ch.assignee = ch.assignee==null?0:(ch.assignee===0?1:null); save(); render(); }})
+          // Tap the person tag → cycle THIS occurrence's assignee only. Template default stays.
+          h("span",{class:"tag person", style:"background:"+pColor(who), text:pName(who),
+            onClick: lock ? function(){ openEdit(ch); } : function(){ cycleOccAssignee(ch, date); }})
         )
       )
     );
@@ -943,7 +953,7 @@
       if(!(wkKey in perWeekMap)){ perWeekMap[wkKey]=[0,0]; weekStarts.push(new Date(wkS)); }
       S.chores.forEach(function(c){
         if(!isDue(c,dCur) || !isDone(c,dCur)) return;
-        var who=S.doneLog[c.id+"_"+ymd(dCur)];
+        var who=occAssignee(c,dCur);
         if(who===0||who===1){ counts[who]+=effortOf(c); perWeekMap[wkKey][who]+=effortOf(c); }
       });
     }
@@ -1035,8 +1045,23 @@
     if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
     if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
     if(d.freq==="Biweekly" || d.freq==="Monthly") target.startDate=d.startDate;
+    // When you edit the template, propagate the new default assignee/lock to upcoming
+    // non-done occurrences so the change is visible immediately. Past + done are left
+    // alone (their assignee is who actually did it).
+    propagateTemplateChanges(target);
     save(); editingId=null; draftOriginal=null; S.modal=null;
     return true;
+  }
+  function propagateTemplateChanges(c){
+    if(!S.occurrences) return;
+    var to=addDays(TODAY,14);
+    for(var d=new Date(TODAY); d<=to; d=addDays(d,1)){
+      if(!isDue(c,d)) continue;
+      var o=S.occurrences[occKey(c.id, d)];
+      if(!o || o.done) continue;
+      o.assignee = c.assignee;
+      o.pinned   = !!c.pinned;
+    }
   }
   function closeAdd(){ editingId=null; draftOriginal=null; S.modal=null; render(); }
   function isDraftDirty(){ return draftOriginal!=null && JSON.stringify(draft)!==draftOriginal; }
@@ -1348,7 +1373,7 @@
   function taskRow(c){
     var eff=effortOf(c);
     var main=h("div",{class:"card-main"},
-      h("div",{class:"card-name", text:(effectivelyPinned(c)?"🔒 ":"")+c.name}),
+      h("div",{class:"card-name", text:(c.pinned?"🔒 ":"")+c.name}),
       h("div",{class:"card-tags"},
         h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
         h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
