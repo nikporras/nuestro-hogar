@@ -395,6 +395,19 @@
   }
   // Tasks whose day is a weekday choice (so we can show quick day-chips).
   function usesWeekdays(c){ var k = getSchedule(c).kind; return k === "daily" || k === "weekly"; }
+  // "Should this chore's card show on this day?" — combines the schedule's
+  // template-due answer with the per-occurrence record. A wizard-pinned occurrence
+  // on a non-natural-due day still surfaces; a tombstoned natural-due day doesn't.
+  // Views and the wizard's row collection use this; ensureOccurrences and the
+  // tombstone-placement loop in saveWizard keep using template-only isDue.
+  function showsOnDay(c, d){
+    if(typeof S !== "undefined" && S.occurrences){
+      var o = S.occurrences[occKey(c.id, d)];
+      if(o && o.tombstone) return false;
+      if(o) return true;
+    }
+    return isDueDepth(c, d, 0);
+  }
   function toggleWeekday(c, dow){
     if(!c.weekdays) c.weekdays=[];
     var k=c.weekdays.indexOf(dow);
@@ -1188,7 +1201,7 @@
 
   function choresForDay(date){
     return S.chores.filter(function(c){
-      if(!isDue(c,date)) return false;
+      if(!showsOnDay(c,date)) return false;
       if(S.filterPerson!==null && c.assignee!==S.filterPerson) return false;
       return true;
     });
@@ -1235,7 +1248,7 @@
     var rows = [];
     S.chores.forEach(function(c){
       for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
-        if(!isDue(c, d)) continue;
+        if(!showsOnDay(c, d)) continue;
         var key = occKey(c.id, d);
         var o = S.occurrences[key];
         if(o && o.done) continue; // skip done — already settled for this week
@@ -1488,7 +1501,7 @@
       var pendingCount = 0;
       for(var ci=0; ci<S.chores.length; ci++){
         for(var dPlan = new Date(TODAY); dPlan <= weekEnd; dPlan = addDays(dPlan,1)){
-          if(!isDue(S.chores[ci], dPlan)) continue;
+          if(!showsOnDay(S.chores[ci], dPlan)) continue;
           var oPlan = S.occurrences[occKey(S.chores[ci].id, dPlan)];
           if(oPlan && (oPlan.done || oPlan.pinned)) continue;
           pendingCount++;
@@ -1589,7 +1602,7 @@
           onClick:function(){ if(out) return; S.monthSelected=ymd(day); render(); }},
           h("div",{class:"d",text:String(day.getDate())}));
         if(!out){
-          var due=S.chores.filter(function(c){return isDue(c,day);});
+          var due=S.chores.filter(function(c){return showsOnDay(c,day);});
           if(due.length){
             var dots=h("div",{class:"dots"});
             due.slice(0,4).forEach(function(c){
@@ -1613,7 +1626,7 @@
     // tasks for the tapped day
     if(S.monthSelected){
       var sp=S.monthSelected.split("-"); var selDate=new Date(+sp[0],(+sp[1])-1,+sp[2]);
-      var dueList=S.chores.filter(function(c){ if(!isDue(c,selDate)) return false; if(S.filterPerson!==null && c.assignee!==S.filterPerson) return false; return true; });
+      var dueList=S.chores.filter(function(c){ if(!showsOnDay(c,selDate)) return false; if(S.filterPerson!==null && occAssignee(c,selDate)!==S.filterPerson) return false; return true; });
       wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[selDate.getDay()]+" "+selDate.getDate()+" "+MONTHS[selDate.getMonth()]}));
       if(dueList.length===0){ wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:6px 0 10px;", text:"No tasks this day."})); }
       else dueList.forEach(function(c){ wrap.appendChild(choreCard(c, selDate)); });
@@ -1669,7 +1682,7 @@
       var wkS=startOfWeek(dCur), wkKey=ymd(wkS);
       if(!(wkKey in perWeekMap)){ perWeekMap[wkKey]=[0,0]; weekStarts.push(new Date(wkS)); }
       S.chores.forEach(function(c){
-        if(!isDue(c,dCur) || !isDone(c,dCur)) return;
+        if(!showsOnDay(c,dCur) || !isDone(c,dCur)) return;
         var who=occAssignee(c,dCur);
         if(who===0||who===1){ counts[who]+=effortOf(c); perWeekMap[wkKey][who]+=effortOf(c); }
       });
@@ -2369,9 +2382,10 @@
     for(var off=0; off<8; off++){
       var day=addDays(TODAY, off);
       S.chores.forEach(function(c){
-        if(!isDue(c, day)) return;
-        if(filter===0 || filter===1){ if(c.assignee!==filter) return; }
-        var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+pName(c.assignee));
+        if(!showsOnDay(c, day)) return;
+        var who = occAssignee(c, day);
+        if(filter===0 || filter===1){ if(who!==filter) return; }
+        var summary=icsEscape((c.icon?c.icon+" ":"")+c.name+" — "+pName(who));
         L.push("BEGIN:VEVENT",
           "UID:nh-"+c.id+"-"+icsDate(day)+"@nuestro-hogar","DTSTAMP:"+stamp,
           "DTSTART;VALUE=DATE:"+icsDate(day),"DTEND;VALUE=DATE:"+icsDate(icsNextDay(day)),
