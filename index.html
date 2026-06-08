@@ -330,6 +330,7 @@
     dayOffset: 0,
     monthOffset: 0,
     monthSelected: null,
+    statsMonthOffset: 0,
     filterPerson: null,
     modal: null
   };
@@ -868,20 +869,38 @@
     rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” deals out the unassigned tasks evenly by difficulty and 🔒 locks each to its person. New tasks start unassigned, ready for the next shuffle. Unlock a task in its settings to put it back in the pool."}));
     wrap.appendChild(rep);
 
-    wrap.appendChild(h("div",{class:"section-title", text:"Completed · this week"}));
-    var wk=startOfWeek(TODAY);
-    var counts=[0,0]; var perDay=[];
-    for(var i=0;i<7;i++){
-      var day=addDays(wk,i); var dc=[0,0];
-      S.chores.forEach(function(c){ if(isDue(c,day)&&isDone(c,day)){ var who=S.doneLog[c.id+"_"+ymd(day)]; if(who===0||who===1){ counts[who]+=effortOf(c); dc[who]+=effortOf(c); } } });
-      perDay.push(dc);
+    // Monthly leaderboard with ‹ › navigation back to previous months.
+    var moOff = S.statsMonthOffset || 0;
+    var mStart = new Date(TODAY.getFullYear(), TODAY.getMonth()+moOff, 1);
+    var mEnd   = new Date(TODAY.getFullYear(), TODAY.getMonth()+moOff+1, 0);
+    var monthLbl = MONTHS[mStart.getMonth()]+" "+mStart.getFullYear();
+    if(moOff===0) monthLbl = "This month · "+monthLbl;
+    else if(moOff===-1) monthLbl = "Last month · "+monthLbl;
+    wrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:14px 4px 12px;"},
+      navBtn("‹", function(){ S.statsMonthOffset = moOff - 1; render(); }),
+      h("div",{class:"section-title", style:"margin:0;cursor:pointer;", text:monthLbl,
+        onClick:function(){ if(moOff!==0){ S.statsMonthOffset = 0; render(); } }}),
+      navBtn("›", moOff<0 ? function(){ S.statsMonthOffset = moOff + 1; render(); } : function(){})
+    ));
+
+    // Walk every day of the selected month, accumulate per-person totals and group by week.
+    var counts=[0,0]; var perWeekMap={}; var weekStarts=[];
+    for(var dCur=new Date(mStart); dCur<=mEnd; dCur=addDays(dCur,1)){
+      var wkS=startOfWeek(dCur), wkKey=ymd(wkS);
+      if(!(wkKey in perWeekMap)){ perWeekMap[wkKey]=[0,0]; weekStarts.push(new Date(wkS)); }
+      S.chores.forEach(function(c){
+        if(!isDue(c,dCur) || !isDone(c,dCur)) return;
+        var who=S.doneLog[c.id+"_"+ymd(dCur)];
+        if(who===0||who===1){ counts[who]+=effortOf(c); perWeekMap[wkKey][who]+=effortOf(c); }
+      });
     }
     var total=counts[0]+counts[1];
     var leader = counts[0]===counts[1] ? -1 : (counts[0]>counts[1]?0:1);
 
     // trophy
     var trophy=h("div",{class:"trophy"});
-    if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("Tie! "+counts[0]+" – "+counts[1])); }
+    if(total===0){ trophy.appendChild(h("span",{class:"big",text:"🌱"})); trophy.appendChild(document.createTextNode("Nothing done yet")); }
+    else if(leader===-1){ trophy.appendChild(h("span",{class:"big",text:"🤝"})); trophy.appendChild(document.createTextNode("Tie! "+counts[0]+" – "+counts[1])); }
     else { trophy.appendChild(h("span",{class:"big",text:"🏆"})); trophy.appendChild(document.createTextNode(S.names[leader]+" is ahead")); }
 
     var card=h("div",{class:"vs-card"}, trophy);
@@ -898,15 +917,17 @@
     });
     wrap.appendChild(card);
 
-    // breakdown
-    wrap.appendChild(h("div",{class:"section-title", text:"Day by day"}));
+    // Week-by-week breakdown for the selected month.
+    wrap.appendChild(h("div",{class:"section-title", text:"Week by week"}));
     var bdCard=h("div",{class:"vs-card"});
     var bd=h("div",{class:"breakdown"});
-    var maxDay=1; perDay.forEach(function(d){ maxDay=Math.max(maxDay,d[0]+d[1]); });
-    perDay.forEach(function(d,i){
-      var col=h("div",{class:"bd-day"}, h("div",{class:"lbl",text:DOW_SHORT[(i+1)%7]}));
+    var perWeek = weekStarts.map(function(wk){ return { wkStart:wk, counts:perWeekMap[ymd(wk)] }; });
+    var maxWk=1; perWeek.forEach(function(w){ maxWk=Math.max(maxWk, w.counts[0]+w.counts[1]); });
+    perWeek.forEach(function(w){
+      var lbl=MONTHS[w.wkStart.getMonth()].slice(0,3)+" "+w.wkStart.getDate();
+      var col=h("div",{class:"bd-day"}, h("div",{class:"lbl", text:lbl}));
       var bar=h("div",{class:"bd-bar"});
-      [0,1].forEach(function(p){ if(d[p]>0){ bar.appendChild(h("div",{class:"bd-seg", style:"height:"+(d[p]/maxDay*100)+"%;background:"+PC[p].c})); } });
+      [0,1].forEach(function(p){ if(w.counts[p]>0){ bar.appendChild(h("div",{class:"bd-seg", style:"height:"+(w.counts[p]/maxWk*100)+"%;background:"+PC[p].c})); } });
       col.appendChild(bar);
       bd.appendChild(col);
     });
