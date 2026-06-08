@@ -692,7 +692,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:2, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
