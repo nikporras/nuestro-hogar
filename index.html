@@ -294,7 +294,6 @@
   // every level of the cascade, so a parent's tombstone also hides its dependents.
   function isDue(ch, date){ return isDueDepth(ch, date, 0); }
   function isDueDepth(ch, date, depth){
-    if(depth > 4) return false; // cycle / over-chain guard
     // S itself doesn't exist yet while the `var S = { ... }` init expression
     // is being evaluated (seedDoneLog calls back through here), so guard the
     // dereference — no occurrences yet means no tombstones to honour.
@@ -302,12 +301,20 @@
       var o0 = S.occurrences[occKey(ch.id, date)];
       if(o0 && o0.tombstone) return false;
     }
+    return scheduleDueDepth(ch, date, depth);
+  }
+  // Pure schedule check — ignores tombstones. The Planning sheet uses this so
+  // skipped rows still surface (you can un-skip them); isDueDepth wraps this
+  // with the tombstone short-circuit for everyone else.
+  function scheduleDue(ch, date){ return scheduleDueDepth(ch, date, 0); }
+  function scheduleDueDepth(ch, date, depth){
+    if(depth > 4) return false; // cycle / over-chain guard
     var sch = getSchedule(ch);
     switch(sch.kind){
       case "after": {
         var parent = findChore(sch.parentId);
         if(!parent) return false;
-        return isDueDepth(parent, addDays(date, -(sch.days||1)), depth + 1);
+        return scheduleDueDepth(parent, addDays(date, -(sch.days||1)), depth + 1);
       }
       case "daily":
         return (sch.days && sch.days.length) ? sch.days.indexOf(date.getDay()) >= 0 : true;
@@ -2387,6 +2394,276 @@
   // UI-only toggle for the Badges card: top 5 by default, full grid on tap.
   var badgesExpanded = false;
 
+  // ---------- Planning sheet ----------
+  // Bulk-assign a whole week. Lives behind the 🔀 chip on the Tasks tab.
+  // Live save on every tap — no draft state, no Save button. Each row maps
+  // to a (chore, natural-due-date) pair; moves are stored as a (tombstone at
+  // source + pinned at target) pair, so reopening the sheet recovers the
+  // same row at its new date.
+  var planCtx = null;   // { weekOffset: 0 | 1 } — 0 = this week, 1 = next
+  function openPlanWeek(offset){
+    planCtx = { weekOffset: offset || 0 };
+    S.modal = "planWeek"; render();
+  }
+  function closePlanWeek(){ planCtx = null; S.modal = null; render(); }
+  function planWeekStart(offset){ return addDays(startOfWeek(TODAY), 7 * (offset || 0)); }
+  // Walk back 7 days from the row's current date and read who had that chore
+  // on that weekday last week. Used to default new rows so the Planning sheet
+  // remembers the recurring rhythm without a separate stored map.
+  function lastWeekAssignee(c, currentDate){
+    var prior = addDays(currentDate, -7);
+    var o = S.occurrences[occKey(c.id, prior)];
+    if(!o || o.tombstone) return null;
+    return (o.assignee === 0 || o.assignee === 1) ? o.assignee : null;
+  }
+  // Build one row per (chore, natural-due-date) in the target week. A move is
+  // represented in S.occurrences as a tombstone at the natural date paired
+  // with a pinned occurrence on the target date (also in this week); the row
+  // follows to the target. A tombstone with no in-week pinned sibling becomes
+  // a skipped row.
+  function buildPlanRows(weekStart){
+    var weekEnd = addDays(weekStart, 6);
+    var rows = [];
+    S.chores.forEach(function(c){
+      var sch = getSchedule(c);
+      // "after" chores derive their dates from a parent and are uneditable here.
+      if(sch.kind === "after") return;
+      for(var d = new Date(weekStart); d <= weekEnd; d = addDays(d, 1)){
+        if(!scheduleDue(c, d)) continue;
+        var natKey = occKey(c.id, d);
+        var natO = S.occurrences[natKey];
+        var skipped = !!(natO && natO.tombstone);
+        var currentDate = new Date(d);
+        var assignee = null;
+        var pinned = false;
+        var done = false;
+        if(skipped){
+          // Look for a pinned in-week sibling that isn't itself a natural-due
+          // date for this chore (that would be its own row). If found, the
+          // row's "current date" is the move target.
+          for(var dd = new Date(weekStart); dd <= weekEnd; dd = addDays(dd, 1)){
+            if(sameDay(dd, d)) continue;
+            var oo = S.occurrences[occKey(c.id, dd)];
+            if(!oo || oo.tombstone || !oo.pinned) continue;
+            if(scheduleDue(c, dd)) continue;
+            currentDate = new Date(dd);
+            assignee = oo.assignee;
+            done = !!oo.done;
+            pinned = true;
+            skipped = false;
+            break;
+          }
+        } else if(natO){
+          assignee = natO.assignee;
+          pinned = !!natO.pinned;
+          done = !!natO.done;
+        }
+        // Default fresh rows to last week's same-weekday assignee — the
+        // Planning sheet's "carry-forward" rhythm. Falls through to null
+        // (Anyone) on first time or after Start fresh / Wipe all progress.
+        if(!skipped && !pinned && assignee == null && !done){
+          assignee = lastWeekAssignee(c, currentDate);
+        }
+        rows.push({
+          chore: c,
+          naturalDate: new Date(d),
+          currentDate: currentDate,
+          assignee: assignee,
+          skipped: skipped,
+          done: done,
+          fixed: !!c.pinned && (c.assignee === 0 || c.assignee === 1)
+        });
+      }
+    });
+    rows.sort(function(a,b){ return a.currentDate - b.currentDate || a.chore.name.localeCompare(b.chore.name); });
+    return rows;
+  }
+  // Per-tap writes. Each one ends in save() so the Supabase sync picks up the
+  // change without a Save button; render() is called by the caller so the
+  // sheet re-derives rows from S.occurrences and reflects the new state.
+  function planSetAssignee(row, to){
+    if(row.fixed) return; // fixed-assignee chore: assignee is locked
+    var key = occKey(row.chore.id, row.currentDate);
+    // Skipped → tapping an assignee un-skips at the natural date.
+    if(row.skipped){
+      delete S.occurrences[occKey(row.chore.id, row.naturalDate)];
+      S.occurrences[occKey(row.chore.id, row.naturalDate)] = {
+        assignee: to, done:false, doneAt:null, pinned: true
+      };
+    } else {
+      var o = ensureOcc(row.chore, row.currentDate);
+      o.assignee = to;
+      o.pinned = true;
+    }
+    save(); render();
+  }
+  function planMoveDay(row, toDate){
+    if(sameDay(row.currentDate, toDate)) return;
+    if(row.done){ alert("This day is already done — undo it first to move it."); return; }
+    var c = row.chore;
+    var toKey = occKey(c.id, toDate);
+    var existing = S.occurrences[toKey];
+    if(existing && !existing.tombstone){
+      alert("'"+c.name+"' is already on "+DOW_SHORT[toDate.getDay()]+" "+toDate.getDate()+".");
+      return;
+    }
+    // Carry the current assignee onto the target, mark pinned. Tombstone the
+    // current date if it's the natural date (so isDue stops surfacing it);
+    // skip tombstoning if the current date is itself a non-natural pin we're
+    // sliding (no isDue to suppress).
+    if(scheduleDue(c, row.currentDate)){
+      S.occurrences[occKey(c.id, row.currentDate)] = { tombstone: true };
+    } else {
+      delete S.occurrences[occKey(c.id, row.currentDate)];
+    }
+    S.occurrences[toKey] = { assignee: row.assignee, done:false, doneAt:null, pinned:true };
+    // If the natural date was different from the source (we're moving an
+    // already-moved row), re-tombstone the natural date too to be safe.
+    if(!sameDay(row.naturalDate, row.currentDate)){
+      S.occurrences[occKey(c.id, row.naturalDate)] = { tombstone: true };
+    }
+    save(); render();
+  }
+  function planToggleSkip(row){
+    var c = row.chore;
+    if(row.done){ alert("This day is already done — undo it first to skip it."); return; }
+    if(row.skipped){
+      // Un-skip: clear the tombstone at the natural date and let the row
+      // reappear there. Any pinned sibling stays — that becomes its own row.
+      delete S.occurrences[occKey(c.id, row.naturalDate)];
+    } else {
+      // Skip: tombstone wherever the row currently lives (natural or moved).
+      // If it had been moved to a non-natural pin, clear that pin and tombstone
+      // the natural date instead.
+      if(!sameDay(row.naturalDate, row.currentDate)){
+        delete S.occurrences[occKey(c.id, row.currentDate)];
+      }
+      S.occurrences[occKey(c.id, row.naturalDate)] = { tombstone: true };
+    }
+    save(); render();
+  }
+  function planWorkload(rows){
+    var t = [0, 0], total = 0, assigned = 0;
+    rows.forEach(function(r){
+      if(r.skipped) return;
+      var pts = effortOf(r.chore);
+      total += pts;
+      if(r.assignee === 0 || r.assignee === 1){
+        t[r.assignee] += pts;
+        assigned += pts;
+      }
+    });
+    return { byPerson: t, total: total, assigned: assigned, fullyAssigned: total > 0 && assigned === total, activeRows: rows.filter(function(r){ return !r.skipped; }).length };
+  }
+  function modalPlanWeek(){
+    if(!planCtx) return h("div");
+    var weekStart = planWeekStart(planCtx.weekOffset);
+    var weekEnd = addDays(weekStart, 6);
+    var rows = buildPlanRows(weekStart);
+    var stats = planWorkload(rows);
+    var monthLine = (function(){
+      var sm = MONTHS[weekStart.getMonth()].slice(0,3);
+      var em = MONTHS[weekEnd.getMonth()].slice(0,3);
+      return sm===em
+        ? sm+" "+weekStart.getDate()+"–"+weekEnd.getDate()+" "+weekStart.getFullYear()
+        : sm+" "+weekStart.getDate()+" – "+em+" "+weekEnd.getDate()+" "+weekEnd.getFullYear();
+    })();
+    // ----- Header -----
+    var weekChips = h("div",{style:"display:flex;gap:6px;justify-content:center;margin:10px 0 4px;"});
+    [[0,"This week"],[1,"Next week"]].forEach(function(pair){
+      var off = pair[0], label = pair[1], on = (planCtx.weekOffset === off);
+      weekChips.appendChild(h("button",{
+        style:"padding:6px 14px;border:1.5px solid "+(on?"var(--accent1)":"var(--border)")+";border-radius:16px;background:"+(on?"var(--accent1)":"var(--surface)")+";color:"+(on?"#fff":"var(--text)")+";font:inherit;font-weight:700;font-size:12px;cursor:pointer;",
+        onClick:function(){ planCtx.weekOffset = off; render(); },
+        text: label
+      }));
+    });
+    var workloadLine = h("div",{style:"display:flex;justify-content:center;align-items:center;gap:10px;font-weight:800;font-size:14px;margin-top:6px;"},
+      h("span",{style:"color:"+PC[0].c, text:S.names[0]+" "+stats.byPerson[0]+" pt"}),
+      h("span",{style:"color:var(--muted);", text:"|"}),
+      h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+stats.byPerson[1]+" pt"})
+    );
+    var countLine = h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;font-weight:700;margin-top:4px;letter-spacing:0.06em;",
+      text: stats.activeRows + " chore" + (stats.activeRows===1?"":"s") + " · " + stats.total + " pt total"});
+    var topBar = h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{style:"margin:0 0 2px;font-size:17px;text-align:center;", text:"🔀 Plan the week"}),
+      h("div",{style:"text-align:center;color:var(--muted);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;", text:monthLine}),
+      weekChips,
+      workloadLine,
+      countLine
+    );
+    // ----- Rows -----
+    var listEl = h("div",{class:"modal-scroll", style:"margin-top:10px;"});
+    if(rows.length === 0){
+      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:24px 8px;",
+        text:"Nothing scheduled in this week."}));
+    } else {
+      rows.forEach(function(r){
+        var row = h("div",{style:"padding:12px 12px 14px;border:1.5px solid var(--border);border-radius:13px;margin-bottom:10px;background:var(--input-bg);opacity:"+(r.skipped?"0.55":"1")+";"});
+        row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
+          h("span",{style:"font-size:22px;", text:r.chore.icon || "🧽"}),
+          h("div",{style:"flex:1;min-width:0;"},
+            h("div",{style:"font-weight:700;font-size:14.5px;", text:(r.fixed?"🔒 ":"")+r.chore.name+(r.skipped?" · skipped":"")}),
+            h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;",
+              text: r.chore.freq + " · " + effortOf(r.chore) + " pt" + (r.done?" · done":"")})
+          ),
+          h("button",{
+            style:"border:1.5px solid "+(r.skipped?"var(--accent2)":"var(--danger)")+";background:"+(r.skipped?"var(--soft-accent)":"var(--danger-bg)")+";color:"+(r.skipped?"var(--soft-accent-text)":"var(--danger)")+";font:inherit;font-weight:700;font-size:11.5px;padding:6px 10px;border-radius:9px;cursor:pointer;",
+            onClick: function(){ planToggleSkip(r); },
+            text: r.skipped ? "Undo skip" : "× Skip"
+          })
+        ));
+        // Day picker — 7 buttons across the week, current date highlighted.
+        var dayPick = h("div",{style:"display:flex;gap:4px;margin-bottom:8px;"});
+        for(var i=0;i<7;i++){
+          (function(){
+            var d = addDays(weekStart, i);
+            var picked = sameDay(d, r.currentDate) && !r.skipped;
+            var disabled = r.skipped || r.done || r.fixed;
+            var bg = picked ? "var(--accent1)" : "var(--surface)";
+            var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
+            dayPick.appendChild(h("button",{
+              style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:8px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+              onClick: disabled ? null : function(){ planMoveDay(r, d); }
+            },
+              h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
+              h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
+            ));
+          })();
+        }
+        row.appendChild(dayPick);
+        // Person picker — fixed-assignee chores show the locked person highlighted
+        // and the other buttons disabled; row.fixed is the only gate.
+        var personPick = h("div",{style:"display:flex;gap:6px;"});
+        [null, 0, 1].forEach(function(p){
+          var picked = (r.assignee === p) && !r.skipped;
+          var label = p == null ? "Anyone" : S.names[p];
+          var fixedBlock = r.fixed && p !== r.chore.assignee;
+          var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
+          var fg = picked ? "#fff" : "var(--text)";
+          var border = picked ? bg : "var(--border)";
+          personPick.appendChild(h("button",{
+            style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:"+(fixedBlock||r.done?"default":"pointer")+";opacity:"+(fixedBlock?"0.35":"1")+";",
+            onClick: (fixedBlock || r.done) ? null : function(){ planSetAssignee(r, p); },
+            text: label
+          }));
+        });
+        row.appendChild(personPick);
+        listEl.appendChild(row);
+      });
+    }
+    var closeBtn = h("button",{
+      class:"btn primary",
+      style:"width:100%;margin-top:4px;",
+      text:"Close",
+      onClick: closePlanWeek
+    });
+    var sheet = h("div",{class:"modal tall"}, topBar, listEl, h("div",{class:"modal-actions", style:"margin-top:6px;"}, closeBtn));
+    attachSwipeClose(topBar, sheet, closePlanWeek);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closePlanWeek(); } }}, sheet);
+  }
+
   function modalWizard(){
     if(!wizardDraft) return h("div");
     var weekStart = wizardDraft.weekStart;
@@ -3141,6 +3418,21 @@
   }
   function viewTasks(){
     var wrap=h("div",{class:"content"});
+    // 🔀 Plan-the-week chips at the top. "Plan next week" appears as a
+    // sibling once this week is fully assigned (every active row has a
+    // person) so the user knows they're done with this week.
+    var thisWeekFull = planWorkload(buildPlanRows(planWeekStart(0))).fullyAssigned;
+    var chipsRow = h("div",{style:"display:flex;gap:8px;margin:0 0 14px;"});
+    function planChip(off, label, primary){
+      return h("button",{
+        style:"flex:1;padding:10px 12px;border:none;border-radius:13px;background:"+(primary?"linear-gradient(135deg,var(--accent1),var(--accent2))":"var(--soft-accent)")+";color:"+(primary?"#fff":"var(--soft-accent-text)")+";font:inherit;font-weight:800;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;",
+        onClick:function(){ openPlanWeek(off); },
+        text:"🔀 "+label
+      });
+    }
+    chipsRow.appendChild(planChip(0, "Plan this week", true));
+    if(thisWeekFull) chipsRow.appendChild(planChip(1, "Plan next week", false));
+    wrap.appendChild(chipsRow);
     var list=S.chores.filter(function(c){ return S.filterPerson===null || c.assignee===S.filterPerson; });
     wrap.appendChild(h("div",{class:"section-title", text:"All tasks ("+list.length+")"}));
     if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Tap + to add a task")); }
@@ -3224,6 +3516,7 @@
     if(S.modal==="badge") root.appendChild(modalBadge());
     if(S.modal==="whenNext") root.appendChild(modalWhenNext());
     if(S.modal==="occurrence") root.appendChild(modalOccurrence());
+    if(S.modal==="planWeek") root.appendChild(modalPlanWeek());
     if(S.modal==="wizard") root.appendChild(modalWizard());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
