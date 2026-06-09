@@ -602,7 +602,7 @@
       by: p,
       redeemedAt: new Date().toISOString()
     });
-    queueCatPopup("thor", "Redeemed!", S.names[p] + " spent " + r.cost + " Purrs on " + r.name + ".");
+    queueCatPopup("thor", S.names[p] + " just spent " + r.cost + " Purrs on " + r.name + ".");
     save(); render();
   }
 
@@ -1432,7 +1432,7 @@
       if(b.check(stats)){
         S.badges[b.id] = now;
         newlyUnlocked.push(b);
-        queueCatPopup("atena", "Badge unlocked!", b.icon + "  " + b.name + " — " + b.desc);
+        queueCatPopup("atena", "Badge unlocked: " + b.icon + " " + b.name + " — " + b.desc);
       }
     });
     return newlyUnlocked;
@@ -2476,12 +2476,42 @@
   ];
   var CAT_BY = {};
   CATS.forEach(function(c){ CAT_BY[c.name.toLowerCase()] = c; });
+  // In-character phrases — one is chosen at random for each popup so the cats
+  // feel like themselves: Atena prophesies, Thor proclaims, Rum praises.
+  var CAT_PHRASES = {
+    atena: [
+      "The omens never lie.",
+      "I saw this in the stars.",
+      "Another prophecy fulfilled.",
+      "The threads of fate align.",
+      "Behold — the future, made present."
+    ],
+    thor: [
+      "Hear ye, hear ye!",
+      "A proclamation for the household!",
+      "Word travels fast across Olympaws.",
+      "Let the news ring out!",
+      "Take note — fresh tidings."
+    ],
+    rum: [
+      "Bravo, mortal!",
+      "The muses are inspired.",
+      "A moment worthy of song.",
+      "Now THAT'S the spirit.",
+      "Encore! Encore!"
+    ]
+  };
+  function pickCatPhrase(catName){
+    var arr = CAT_PHRASES[catName] || [];
+    return arr[Math.floor(Math.random() * arr.length)] || "";
+  }
   // In-app popup queue: a cat appears for each event (Atena = badges,
   // Thor = redemptions, Rum = earnings) and the user dismisses one at a time.
   // Lives outside S because it's transient device-local UI state.
   var catPopupQueue = [];
-  function queueCatPopup(catName, title, body){
-    catPopupQueue.push({ cat:String(catName||"atena").toLowerCase(), title:title, body:body });
+  function queueCatPopup(catName, body){
+    var cn = String(catName||"atena").toLowerCase();
+    catPopupQueue.push({ cat:cn, title:pickCatPhrase(cn), body:body });
     if(!S.modal){ S.modal = "catPopup"; }
   }
   function dismissCatPopup(){
@@ -2517,7 +2547,7 @@
       if(balance < m) return;
       if(S.rumMilestonesHit[key].indexOf(m) >= 0) return;
       S.rumMilestonesHit[key].push(m);
-      queueCatPopup("rum", "Milestone!", S.names[personIdx] + " just crossed " + m + " Purrs.");
+      queueCatPopup("rum", S.names[personIdx] + " just crossed " + m + " Purrs.");
     });
   }
   var catView = null;
