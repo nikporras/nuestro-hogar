@@ -461,6 +461,7 @@
     badgeBaselineAt:   load("nh_badgeBaselineAt", null),
     scheduleClearedAt: load("nh_scheduleClearedAt", null),
     suppressInitialMaterialisation: load("nh_suppressInitialMaterialisation", false),
+    rumMilestonesHit: load("nh_rumMilestonesHit", { "0": [], "1": [] }),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
@@ -504,6 +505,7 @@
     localStorage.setItem("nh_badgeBaselineAt", JSON.stringify(S.badgeBaselineAt));
     localStorage.setItem("nh_scheduleClearedAt", JSON.stringify(S.scheduleClearedAt));
     localStorage.setItem("nh_suppressInitialMaterialisation", JSON.stringify(!!S.suppressInitialMaterialisation));
+    localStorage.setItem("nh_rumMilestonesHit", JSON.stringify(S.rumMilestonesHit || { "0": [], "1": [] }));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
@@ -839,7 +841,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation, rumMilestonesHit:S.rumMilestonesHit }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -861,6 +863,7 @@
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
     if(typeof d.suppressInitialMaterialisation==="boolean") S.suppressInitialMaterialisation=d.suppressInitialMaterialisation;
+    if(d.rumMilestonesHit && typeof d.rumMilestonesHit==="object") S.rumMilestonesHit=d.rumMilestonesHit;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
@@ -996,6 +999,7 @@
       if(o.assignee === 0 || o.assignee === 1){
         S.balances[o.assignee] += pts;
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
+        checkRumMilestones(o.assignee);
       }
     }
     save();
@@ -1024,6 +1028,7 @@
       if(o.assignee === 0 || o.assignee === 1){
         S.balances[o.assignee] = (S.balances[o.assignee]||0) + pts;
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
+        checkRumMilestones(o.assignee);
       }
     }
     save(); render();
@@ -1341,6 +1346,7 @@
     S.badgeBaselineDate = ymd(TODAY);
     S.badgeBaselineAt   = new Date().toISOString();
     S.badgeBaselineBalances = [S.balances[0]||0, S.balances[1]||0];
+    S.rumMilestonesHit = { "0": [], "1": [] };
     invalidateBadgeStats(); // baseline moved → rebuild from scratch
     save();
     S.modal = null;
@@ -1371,6 +1377,7 @@
     S.badgeBaselineAt = new Date().toISOString();
     S.badgeBaselineBalances = [0, 0];
     S.balancesMigratedAt = null;
+    S.rumMilestonesHit = { "0": [], "1": [] };
     invalidateBadgeStats();
     save();
     S.modal = null;
@@ -2494,6 +2501,24 @@
         h("div",{style:"font-size:14px;color:var(--text);margin-bottom:18px;line-height:1.4;", text:p.body}),
         h("button",{class:"btn primary", style:"width:80%;margin:0 auto;display:block;", onClick:dismissCatPopup, text:"Got it"})
       ));
+  }
+  // Rum fires once per person each time their balance first crosses one of
+  // these milestones. Crossed milestones are persisted so undo+redo doesn't
+  // double-fire and so the popup doesn't repeat after a sync from another
+  // device. resetBadgeProgress / wipeAllProgress clear the hit set.
+  var RUM_MILESTONES = [10, 25, 50, 100, 250, 500, 1000];
+  function checkRumMilestones(personIdx){
+    if(personIdx !== 0 && personIdx !== 1) return;
+    if(!S.rumMilestonesHit) S.rumMilestonesHit = { "0": [], "1": [] };
+    var key = String(personIdx);
+    if(!Array.isArray(S.rumMilestonesHit[key])) S.rumMilestonesHit[key] = [];
+    var balance = S.balances[personIdx] || 0;
+    RUM_MILESTONES.forEach(function(m){
+      if(balance < m) return;
+      if(S.rumMilestonesHit[key].indexOf(m) >= 0) return;
+      S.rumMilestonesHit[key].push(m);
+      queueCatPopup("rum", "Milestone!", S.names[personIdx] + " just crossed " + m + " Purrs.");
+    });
   }
   var catView = null;
   function openCat(c){ catView = c; S.modal = "cat"; render(); }
