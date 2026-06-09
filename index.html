@@ -402,31 +402,21 @@
   }
   // Tasks whose day is a weekday choice (so we can show quick day-chips).
   function usesWeekdays(c){ var k = getSchedule(c).kind; return k === "daily" || k === "weekly"; }
-  // "Should this chore's card show on this day?" — combines the schedule's
-  // template-due answer with the per-occurrence record. A Planning-sheet pin on
-  // a non-natural-due day still surfaces; a tombstoned natural-due day doesn't.
-  // Views use this; ensureOccurrences keeps using template-only isDue.
+  // "Should this chore's card show on this day?" — true iff an explicit
+  // per-occurrence record exists (and isn't a tombstone), or a legacy
+  // doneLog hit covers this date. No template fallback: the calendar
+  // shows only what the Planning sheet has placed plus historical
+  // completions. Brand-new chores stay invisible on Today/Week/Month until
+  // they're assigned in the Planning sheet — that's intentional.
   function showsOnDay(c, d){
-    if(typeof S !== "undefined" && S.occurrences){
+    if(typeof S === "undefined") return false;
+    if(S.occurrences){
       var o = S.occurrences[occKey(c.id, d)];
       if(o && o.tombstone) return false;
       if(o) return true;
     }
-    // Real completion history always shows (cards survive even after the
-    // materialised occurrence is gone — they're the visible receipt).
-    if(typeof S !== "undefined" && S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
-    // While the post-Start-fresh gate is still on, suppress the template
-    // fallback for everything from the cleared moment onward so the board
-    // doesn't re-grow ghost cards before the Planning sheet places real ones.
-    if(typeof S !== "undefined" && S.suppressInitialMaterialisation && S.scheduleClearedAt && ymd(d) >= S.scheduleClearedAt.slice(0,10)) return false;
-    // Template fallback is bounded to the materialisation window — beyond that
-    // window there should be no ghost cards in either direction.
-    var pastFloor = addDays(startOfWeek(TODAY), -7);
-    if(d < pastFloor) return false;
-    var ranges = periodRanges(c);
-    var futureCeil = ranges ? ranges.next.end : addDays(TODAY, 14);
-    if(d > futureCeil) return false;
-    return isDueDepth(c, d, 0);
+    if(S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
+    return false;
   }
   function toggleWeekday(c, dow){
     if(!c.weekdays) c.weekdays=[];
@@ -686,49 +676,21 @@
 
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
-    var pastFrom = addDays(startOfWeek(TODAY), -7); // covers last week for stats / past-day edits
-    // Materialisation gate: set on Start fresh, cleared on first wizard save.
-    // (scheduleClearedAt is a persistent timestamp used for hide-history-dot
-    // logic, not the gate.) When this is true, default materialisation of
-    // current/next-period slots is skipped — the board stays empty until the
-    // wizard explicitly places cards.
-    var gateNew = !!S.suppressInitialMaterialisation;
-    var clearedYmd = S.scheduleClearedAt ? S.scheduleClearedAt.slice(0,10) : null;
+    // The Planning sheet is the only writer of pinned/assigned occurrences.
+    // ensureOccurrences's only remaining job is the doneLog → occurrence
+    // backfill so legacy completions (from before the per-occurrence record
+    // existed) still surface as cards / receipts. Bounded to a recent window
+    // so we're not iterating the whole chore × date space every startup.
+    var pastFrom = addDays(startOfWeek(TODAY), -7);
+    var futureTo = addDays(TODAY, 14);
     for(var i=0;i<S.chores.length;i++){
       var c = S.chores[i];
-      var ranges = periodRanges(c);
-      var futureTo = ranges ? ranges.next.end : addDays(TODAY, 14);
-      var inCurrent = function(d){
-        return ranges && d >= ranges.current.start && d <= ranges.current.end;
-      };
       for(var d=new Date(pastFrom); d<=futureTo; d=addDays(d,1)){
-        if(!isDue(c, d)) continue;
         var key = occKey(c.id, d);
-        if(S.occurrences[key]){
-          // Refresh: an unpinned undone occurrence that has slid into the NEXT
-          // period (because the user re-planned, or the clock rolled forward)
-          // becomes unassigned again, waiting for the next wizard pass.
-          var existing = S.occurrences[key];
-          if(!existing.tombstone && !existing.done && !existing.pinned && !inCurrent(d) && existing.assignee !== null){
-            existing.assignee = null;
-          }
-          continue;
-        }
+        if(S.occurrences[key]) continue;
         var prev = S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, key) ? S.doneLog[key] : undefined;
         if(prev===0 || prev===1){
-          // Migrated from doneLog: someone completed this date already.
           S.occurrences[key] = { assignee:prev, done:true, doneAt:ymd(d)+"T00:00:00Z", pinned:!!c.pinned };
-        } else if(!gateNew || !clearedYmd || ymd(d) < clearedYmd){
-          // Normal default materialisation. While the gate is on, dates at or
-          // after the cleared moment skip this branch entirely — the wizard
-          // becomes the only thing that places real cards going forward.
-          var here = inCurrent(d);
-          S.occurrences[key] = {
-            assignee: here ? c.assignee : null,        // next period starts unassigned
-            done: false,
-            doneAt: null,
-            pinned: here ? !!c.pinned : false           // and unlocked
-          };
         }
       }
     }
@@ -1895,7 +1857,7 @@
       wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
     }
     wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send to calendar" }));
-    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Each task goes through its current and next period (week / biweek / month). Next period's slots are unassigned until you plan them."}));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Only weeks you've planned show up here. Use 🔀 Plan this week on the Tasks tab to fill in the next one."}));
     return wrap;
   }
 
