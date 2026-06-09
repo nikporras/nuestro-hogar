@@ -403,10 +403,9 @@
   // Tasks whose day is a weekday choice (so we can show quick day-chips).
   function usesWeekdays(c){ var k = getSchedule(c).kind; return k === "daily" || k === "weekly"; }
   // "Should this chore's card show on this day?" — combines the schedule's
-  // template-due answer with the per-occurrence record. A wizard-pinned occurrence
-  // on a non-natural-due day still surfaces; a tombstoned natural-due day doesn't.
-  // Views and the wizard's row collection use this; ensureOccurrences and the
-  // tombstone-placement loop in saveWizard keep using template-only isDue.
+  // template-due answer with the per-occurrence record. A Planning-sheet pin on
+  // a non-natural-due day still surfaces; a tombstoned natural-due day doesn't.
+  // Views use this; ensureOccurrences keeps using template-only isDue.
   function showsOnDay(c, d){
     if(typeof S !== "undefined" && S.occurrences){
       var o = S.occurrences[occKey(c.id, d)];
@@ -418,7 +417,7 @@
     if(typeof S !== "undefined" && S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
     // While the post-Start-fresh gate is still on, suppress the template
     // fallback for everything from the cleared moment onward so the board
-    // doesn't re-grow ghost cards before the wizard places real ones.
+    // doesn't re-grow ghost cards before the Planning sheet places real ones.
     if(typeof S !== "undefined" && S.suppressInitialMaterialisation && S.scheduleClearedAt && ymd(d) >= S.scheduleClearedAt.slice(0,10)) return false;
     // Template fallback is bounded to the materialisation window — beyond that
     // window there should be no ghost cards in either direction.
@@ -1343,7 +1342,7 @@
   // and badge baselines. Also un-marks any done occurrences so the calendar
   // shows them as still-to-do (otherwise we'd have visually-done cards with
   // no backing entry in doneLog). Chore templates, reward catalog, current
-  // wizard pins, reminders, and account stay intact.
+  // Planning-sheet pins, reminders, and account stay intact.
   function wipeAllProgress(){
     if(!confirm("Wipe ALL earned progress? Completion history, Purrs, badges, streaks, and redemptions are all reset to zero. Chore list, reward catalog, current week's plan, and reminders stay. This can't be undone.")) return;
     if(S.occurrences){
@@ -1373,12 +1372,12 @@
   // and sets the scheduleClearedAt flag. From the cleared moment forward, the
   // board stays empty: showsOnDay refuses the template fallback and
   // ensureOccurrences skips its default materialisation, so no cards re-grow
-  // until the wizard explicitly places them. Past dates within the
+  // until the Planning sheet explicitly places them. Past dates within the
   // materialisation window get tombstoned so last-week ghost cards disappear
   // too. Templates, doneLog history, balances, rewards, badges, streaks, and
   // reminders are all untouched.
   function clearAllOccurrences(){
-    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you run the wizard again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you plan the week again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
     S.occurrences = {};
     S.scheduleClearedAt = new Date().toISOString();
     S.suppressInitialMaterialisation = true;
@@ -1401,7 +1400,7 @@
     save();
     S.modal = null;
     render();
-    alert("Done. The board is empty — assign tasks with the wizard whenever you're ready.");
+    alert("Done. The board is empty — head to the Tasks tab and tap 🔀 Plan this week whenever you're ready.");
   }
 
   // Called from save(); checks every badge predicate, records the unlock instant.
@@ -1451,9 +1450,9 @@
   // ---------- fair workload split ----------
   // Total assigned effort points per person — counts the actual planned
   // occurrences in [today, today+13d], not the chore templates' default
-  // assignees. After the wizard runs, the per-occurrence assignments are the
-  // truth; reading c.assignee here gave wrong numbers (e.g. a chore template-
-  // defaulted to Nico but wizard-assigned to Caro this week was still counted
+  // assignees. The per-occurrence assignments are the truth; reading
+  // c.assignee here gave wrong numbers (e.g. a chore template-defaulted to
+  // Nico but Planning-sheet-assigned to Caro this week was still counted
   // against Nico). Skips done, tombstoned, and unassigned slots.
   function assignedPoints(){
     var t = [0, 0];
@@ -1478,219 +1477,6 @@
     });
     return t;
   }
-  // Deal out every upcoming non-done, non-locked occurrence in the next 14 days so
-  // ---------- Weekly Shuffle wizard (Phase 7) ----------
-  // The wizard opens with one row per scheduled occurrence in [today, end of week],
-  // each editable for both day and person. "Auto-balance" picks people to even out
-  // effort and round-robins days across the week. Save replaces every undone
-  // occurrence in the planned range with the user's chosen (date, assignee) pairs;
-  // the week gets marked as planned so ensureOccurrences won't undo the moves.
-  var wizardDraft = null;
-
-  function openWizard(){
-    var weekStart = startOfWeek(TODAY);
-    var weekEnd   = addDays(weekStart, 6);
-    var rangeStart = new Date(TODAY); // schedule from today onwards, leave past alone
-    var rows = [];
-    // After "Start fresh", every row defaults to Anyone so the user picks each
-    // assignee explicitly instead of inheriting the template's default person.
-    var freshClear = !!S.scheduleClearedAt;
-    S.chores.forEach(function(c){
-      // Pass 1: every natural-due / existing-pin date in this week.
-      var hadAny = false;
-      for(var d=new Date(rangeStart); d<=weekEnd; d=addDays(d,1)){
-        var key = occKey(c.id, d);
-        var o = S.occurrences[key];
-        if(o && o.tombstone) continue;
-        if(o && o.done){ hadAny = true; continue; } // counts as covered
-        if(!o && !isDueDepth(c, d, 0)) continue;
-        rows.push({
-          chore: c,
-          date: new Date(d),
-          // Preserve an existing occurrence's assignee (e.g. a previous wizard
-          // pass already pinned someone) — only fall through to the Anyone
-          // default when this is a fresh row with no record yet.
-          assignee: o ? o.assignee : (freshClear ? null : c.assignee),
-          edited: false
-        });
-        hadAny = true;
-      }
-      // Pass 2: if the chore has no presence this week (typical for biweekly
-      // whose anchor falls in next week, or weekly opened on a day past its
-      // weekday), pull its first upcoming natural-due / existing-pin date into
-      // the wizard so auto-shuffle can still give it a person. Bounded at 28d
-      // to cover biweekly + monthly first occurrences without being silly.
-      if(hadAny) return;
-      var lookEnd = addDays(weekEnd, 28);
-      for(var d2 = addDays(weekEnd, 1); d2 <= lookEnd; d2 = addDays(d2, 1)){
-        var key2 = occKey(c.id, d2);
-        var o2 = S.occurrences[key2];
-        if(o2 && o2.tombstone) continue;
-        if(o2 && o2.done) break;
-        if(!o2 && !isDueDepth(c, d2, 0)) continue;
-        rows.push({
-          chore: c,
-          date: new Date(d2),
-          assignee: o2 ? o2.assignee : (freshClear ? null : c.assignee),
-          edited: false
-        });
-        break; // first occurrence only
-      }
-    });
-    // Index children by parent id so cascade-on-date-pick is O(children) instead of
-    // O(rows) per click. Built once because the parent/child graph is fixed for the
-    // life of this wizard session.
-    var childrenByParent = {};
-    rows.forEach(function(r){
-      var sch = getSchedule(r.chore);
-      if(sch.kind !== "after" || !sch.parentId) return;
-      var pid = String(sch.parentId);
-      if(!childrenByParent[pid]) childrenByParent[pid] = [];
-      childrenByParent[pid].push(r);
-    });
-    wizardDraft = { rows: rows, weekStart: weekStart, weekEnd: weekEnd, rangeStart: rangeStart, childrenByParent: childrenByParent };
-    S.modal = "wizard"; render();
-  }
-
-  function autoBalanceWizard(){
-    if(!wizardDraft) return;
-    // Heaviest first, distribute people to keep totals close; round-robin days across
-    // [rangeStart..weekEnd] in chronological order so Monday isn't overloaded.
-    var nonDeps = wizardDraft.rows.filter(function(r){ return !r.edited && getSchedule(r.chore).kind !== "after"; }).slice()
-      .sort(function(a,b){ return effortOf(b.chore) - effortOf(a.chore); });
-    var deps    = wizardDraft.rows.filter(function(r){ return !r.edited && getSchedule(r.chore).kind === "after"; });
-    var totals = [0, 0];
-    // Pre-count effort from rows the user already edited so the balancer accounts for them.
-    wizardDraft.rows.forEach(function(r){
-      if(r.edited && (r.assignee === 0 || r.assignee === 1)) totals[r.assignee] += effortOf(r.chore);
-    });
-    // Build the list of valid days in the planning range.
-    var days = [];
-    for(var d=new Date(wizardDraft.rangeStart); d<=wizardDraft.weekEnd; d=addDays(d,1)) days.push(new Date(d));
-    // Track which day-indexes each chore has already claimed so two rows of the
-    // same daily chore don't both land on the same date (step 4 would silently
-    // overwrite one). When all slots are taken we fall back to last-write-wins.
-    // Rows whose date is OUTSIDE this week (the "first occurrence" of a chore
-    // whose only due dates are next week or later) keep their natural date and
-    // only get a person — moving them into this week would change the plan.
-    var perChoreSlots = {};
-    nonDeps.forEach(function(row, i){
-      var who = totals[0] <= totals[1] ? 0 : 1;
-      row.assignee = who;
-      totals[who] += effortOf(row.chore);
-      if(row.date < wizardDraft.rangeStart || row.date > wizardDraft.weekEnd) return;
-      var cid = String(row.chore.id);
-      if(!perChoreSlots[cid]) perChoreSlots[cid] = {};
-      var start = i % days.length;
-      var picked = start;
-      for(var step = 0; step < days.length; step++){
-        var idx = (start + step) % days.length;
-        if(!perChoreSlots[cid][idx]){ picked = idx; break; }
-      }
-      perChoreSlots[cid][picked] = true;
-      row.date = days[picked];
-    });
-    // Dependents inherit their parent's day + N, and pick up the parent's person so
-    // the same hands that washed do the folding.
-    deps.forEach(function(row){
-      var rowSch = getSchedule(row.chore);
-      var parentId = rowSch.parentId;
-      var parentRow = null;
-      for(var k=0;k<wizardDraft.rows.length;k++){
-        if(wizardDraft.rows[k].chore.id === parentId){ parentRow = wizardDraft.rows[k]; break; }
-      }
-      if(parentRow){
-        row.date = addDays(parentRow.date, rowSch.days || 1);
-        if(parentRow.assignee === 0 || parentRow.assignee === 1){
-          row.assignee = parentRow.assignee;
-          totals[row.assignee] += effortOf(row.chore);
-        }
-      }
-    });
-    render();
-  }
-
-  // When the user picks a day for a parent in the wizard, drag any unedited
-  // dependent rows along by their N-day offset. Looks up children from the
-  // index built at openWizard time.
-  function cascadeWizardDate(parentChoreId, newParentDate){
-    if(!wizardDraft) return;
-    var children = (wizardDraft.childrenByParent && wizardDraft.childrenByParent[String(parentChoreId)]) || [];
-    children.forEach(function(row){
-      if(row.edited) return; // soft link — user override sticks
-      var rowSch = getSchedule(row.chore);
-      row.date = addDays(newParentDate, rowSch.days || 1);
-    });
-  }
-
-  function saveWizard(){
-    if(!wizardDraft) return;
-    // Step 1: drop every existing undone occurrence for any chore the wizard
-    // covered in the planning range, so we can lay down the new plan cleanly.
-    // Outside the weekly range we ALSO clear pinned occurrences, because pass 2
-    // can put first-occurrence pins beyond this week (biweekly anchor next
-    // week, cascaded "after" child, etc.); without this, the prior shuffle's
-    // beyond-week pin survived alongside the new one and assignedPoints
-    // double-counted the chore. Non-pinned beyond-week occurrences (next-
-    // period null cards) are left alone — they're not wizard-owned.
-    var touchedChores = {};
-    wizardDraft.rows.forEach(function(r){ touchedChores[String(r.chore.id)] = r.chore; });
-    var fromKey = ymd(wizardDraft.rangeStart), toKey = ymd(wizardDraft.weekEnd);
-    Object.keys(S.occurrences).forEach(function(key){
-      var under = key.indexOf("_"); if(under < 0) return;
-      if(!touchedChores[key.slice(0, under)]) return;
-      var dStr = key.slice(under + 1);
-      var o = S.occurrences[key];
-      if(!o || o.done) return;
-      if(dStr >= fromKey && dStr <= toKey){
-        delete S.occurrences[key]; // in-week: clear all undone for a clean slate
-      } else if(o.pinned){
-        delete S.occurrences[key]; // beyond-week: clear prior wizard pins only
-      }
-    });
-    // Step 2: build the set of (chore, date) the user chose for fast lookup.
-    var chosen = {};
-    wizardDraft.rows.forEach(function(r){ chosen[occKey(r.chore.id, r.date)] = true; });
-    // Step 3a: collect every naturally-due (chore, date) in the planning range
-    // BEFORE placing any new tombstones — otherwise tombstoning a parent's date
-    // in this same loop would make a dependent's cascading isDue read return
-    // false, and we'd miss tombstoning the dependent's natural day.
-    var natural = {};
-    Object.keys(touchedChores).forEach(function(chIdStr){
-      var c = touchedChores[chIdStr];
-      for(var d = new Date(wizardDraft.rangeStart); d <= wizardDraft.weekEnd; d = addDays(d, 1)){
-        if(!isDueDepth(c, d, 0)) continue;
-        natural[occKey(c.id, d)] = true;
-      }
-    });
-    // Step 3b: for each natural-due (chore, date) the user did NOT choose, lay
-    // down a tombstone so ensureOccurrences doesn't re-materialise it.
-    Object.keys(natural).forEach(function(key){
-      if(chosen[key]) return;            // about to write the real row
-      if(S.occurrences[key]) return;     // a done one stayed; leave it
-      S.occurrences[key] = { tombstone: true };
-    });
-    // Step 4: write the wizard's chosen rows as locked occurrences.
-    wizardDraft.rows.forEach(function(r){
-      var key = occKey(r.chore.id, r.date);
-      S.occurrences[key] = {
-        assignee: r.assignee,
-        done: false,
-        doneAt: null,
-        pinned: true
-      };
-    });
-    // First wizard pass after "Start fresh" — drop the materialisation gate so
-    // ensureOccurrences resumes its two-period auto-fill. scheduleClearedAt is
-    // intentionally LEFT SET: it's a persistent timestamp the calendar uses to
-    // keep hiding pre-clear completion-history grey dots even after this save.
-    S.suppressInitialMaterialisation = false;
-    wizardDraft = null;
-    S.modal = null;
-    save();
-    render(); // save() doesn't re-render, so the modal would stay open visually
-  }
-  function closeWizard(){ wizardDraft = null; S.modal = null; render(); }
 
   // ---------- tiny DOM helper ----------
   function h(tag, attrs){
@@ -1968,30 +1754,25 @@
     var date=addDays(TODAY, S.dayOffset||0);
     var list=choresForDay(date);
     var wrap=h("div",{class:"content"});
-    // Weekly planning banner — only on real Today, and only if any future-due
-    // chore in this week is still showing its template default (no wizard pin yet,
-    // no tombstone, not already done).
+    // Small planning cue — only on real Today, and only if any non-skipped row
+    // in this week still needs a person. Tasks tab has the bigger 🔀 chip;
+    // this is just a hint so you know the Planning sheet exists.
     if((S.dayOffset||0) === 0){
-      var weekEnd = addDays(startOfWeek(TODAY), 6);
       var pendingCount = 0;
-      for(var ci=0; ci<S.chores.length; ci++){
-        for(var dPlan = new Date(TODAY); dPlan <= weekEnd; dPlan = addDays(dPlan,1)){
-          if(!showsOnDay(S.chores[ci], dPlan)) continue;
-          var oPlan = S.occurrences[occKey(S.chores[ci].id, dPlan)];
-          if(oPlan && (oPlan.done || oPlan.pinned)) continue;
-          pendingCount++;
-        }
+      var planRows = buildPlanRows(planWeekStart(0));
+      for(var pri=0; pri<planRows.length; pri++){
+        var pr = planRows[pri];
+        if(pr.skipped || pr.done) continue;
+        if(pr.assignee === 0 || pr.assignee === 1) continue;
+        pendingCount++;
       }
       if(pendingCount > 0){
         wrap.appendChild(h("div",{
-          style:"background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;padding:12px 14px;border-radius:14px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;",
-          onClick: openWizard
+          style:"background:var(--soft-accent);color:var(--soft-accent-text);padding:9px 12px;border-radius:11px;margin-bottom:12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:700;",
+          onClick: function(){ openPlanWeek(0); }
         },
-          h("div",{style:"flex:1;min-width:0;"},
-            h("div",{style:"font-weight:800;font-size:14.5px;", text:"Plan this week"}),
-            h("div",{style:"font-size:12px;opacity:0.85;margin-top:2px;", text: pendingCount+" tasks to schedule"})
-          ),
-          h("div",{style:"font-size:22px;font-weight:800;", text:"›"})
+          h("span",{text: "🔀 " + pendingCount + " chore" + (pendingCount===1?"":"s") + " need a person · tap to plan"}),
+          h("span",{style:"font-size:16px;font-weight:800;", text:"›"})
         ));
       }
     }
@@ -2127,7 +1908,7 @@
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
       h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)"),
-      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:openWizard, text:"🔀 Plan week" })
+      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:function(){ openPlanWeek(0); }, text:"🔀 Plan week" })
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
@@ -2139,7 +1920,7 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"“Shuffle” deals out the unassigned tasks evenly by difficulty and 🔒 locks each to its person. New tasks start unassigned, ready for the next shuffle. Unlock a task in its settings to put it back in the pool."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Tap 🔀 Plan week to assign every chore for the week. Points stack up here as you mark each occurrence done."}));
     wrap.appendChild(rep);
 
     // Monthly leaderboard with ‹ › navigation back to previous months.
@@ -2664,103 +2445,6 @@
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closePlanWeek(); } }}, sheet);
   }
 
-  function modalWizard(){
-    if(!wizardDraft) return h("div");
-    var weekStart = wizardDraft.weekStart;
-    var weekEnd   = wizardDraft.weekEnd;
-    // Group rows by chronological date for display.
-    var rowsCopy = wizardDraft.rows.slice().sort(function(a,b){ return a.date - b.date; });
-
-    var monthLine = (function(){
-      var sm = MONTHS[weekStart.getMonth()].slice(0,3);
-      var em = MONTHS[weekEnd.getMonth()].slice(0,3);
-      return sm===em
-        ? sm+" "+weekStart.getDate()+"–"+weekEnd.getDate()+" "+weekStart.getFullYear()
-        : sm+" "+weekStart.getDate()+" – "+em+" "+weekEnd.getDate()+" "+weekEnd.getFullYear();
-    })();
-
-    var listEl = h("div",{class:"modal-scroll", style:"margin-top:10px;"});
-    if(rowsCopy.length === 0){
-      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:24px 8px;",
-        text:"Nothing scheduled in the rest of this week."}));
-    } else {
-      rowsCopy.forEach(function(r){
-        var row = h("div",{style:"padding:12px 12px 14px;border:1.5px solid var(--border);border-radius:13px;margin-bottom:10px;background:var(--input-bg);"});
-        row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
-          h("span",{style:"font-size:22px;", text:r.chore.icon || "🧽"}),
-          h("div",{style:"flex:1;min-width:0;"},
-            h("div",{style:"font-weight:700;font-size:14.5px;", text:r.chore.name}),
-            h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;", text:r.chore.freq + " · " + effortOf(r.chore) + " pt"})
-          )
-        ));
-        // Day picker — 7 buttons, only days in [rangeStart..weekEnd] are tappable.
-        var dayPick = h("div",{style:"display:flex;gap:4px;margin-bottom:8px;"});
-        for(var i=0;i<7;i++){
-          (function(){
-            var d = addDays(weekStart, i);
-            var disabled = d < wizardDraft.rangeStart;
-            var picked = sameDay(d, r.date);
-            var bg = picked ? "var(--accent1)" : "var(--surface)";
-            var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
-            var btn = h("button",{
-              style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:8px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.35":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
-              onClick: disabled ? null : function(){ r.date = d; r.edited = true; cascadeWizardDate(r.chore.id, d); render(); }
-            },
-              h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
-              h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
-            );
-            dayPick.appendChild(btn);
-          })();
-        }
-        row.appendChild(dayPick);
-        // Cascade can push a child past Sunday; the 7 day-buttons can't
-        // represent that, so call it out so the row doesn't look "blank".
-        if(r.date < weekStart || r.date > weekEnd){
-          var outLabel = DOW_SHORT[r.date.getDay()] + " " + MONTHS[r.date.getMonth()].slice(0,3) + " " + r.date.getDate();
-          row.appendChild(h("div",{
-            style:"font-size:11px;color:var(--accent2);font-weight:700;text-align:center;margin:0 0 8px;",
-            text:"↳ Lands " + outLabel + " (next week)"
-          }));
-        }
-        // Person picker
-        var personPick = h("div",{style:"display:flex;gap:6px;"});
-        [null, 0, 1].forEach(function(p){
-          var picked = r.assignee === p;
-          var label = p == null ? "Anyone" : S.names[p];
-          var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
-          var fg = picked ? "#fff" : "var(--text)";
-          var border = picked ? bg : "var(--border)";
-          personPick.appendChild(h("button",{
-            style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
-            onClick:function(){ r.assignee = p; r.edited = true; render(); },
-            text: label
-          }));
-        });
-        row.appendChild(personPick);
-        listEl.appendChild(row);
-      });
-    }
-
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeWizard(); } }},
-      h("div",{class:"modal tall"},
-        h("div",{class:"sheet-top"},
-          h("div",{class:"grab"}),
-          h("h3",{style:"margin:0 0 2px;font-size:18px;text-align:center;", text:"Plan this week"}),
-          h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;", text:monthLine}),
-          h("button",{
-            style:"margin:14px auto 0;display:block;border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:800;font-size:13px;padding:8px 18px;border-radius:18px;cursor:pointer;",
-            onClick: autoBalanceWizard,
-            text: "🔀 Auto-balance"
-          })
-        ),
-        listEl,
-        h("div",{class:"modal-actions", style:"margin-top:6px;"},
-          h("button",{class:"btn ghost", text:"Cancel", onClick: closeWizard}),
-          h("button",{class:"btn primary", text:"Save the week", onClick: saveWizard})
-        )
-      ));
-  }
-
   // ---------- "When next?" picker for Biweekly / cycle-Monthly (Phase 6) ----------
   var whenNextCtx = null;
   function openWhenNext(ch, doneDate){
@@ -2998,7 +2682,7 @@
     for(var d=new Date(TODAY); d<=to; d=addDays(d,1)){
       if(!isDue(c,d)) continue;
       var o=S.occurrences[occKey(c.id, d)];
-      // Don't clobber occurrences the user has locked (wizard / per-occurrence pin).
+      // Don't clobber occurrences the user has planned (Planning sheet / per-occurrence pin).
       // Editing the template's default assignee shouldn't undo intent expressed on
       // a specific date.
       if(!o || o.done || o.pinned) continue;
@@ -3262,9 +2946,9 @@
     var stamp=icsStampUTC();
     var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Olympaws//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Olympaws"];
     // For each chore, lay down its occurrences in the current AND next period
-    // (per the schedule kind). Current-period assignments are the wizard's;
-    // next-period slots are usually unassigned, waiting to be planned. Re-export
-    // each period to refresh.
+    // (per the schedule kind). Current-period assignments come from the
+    // Planning sheet; next-period slots are usually unassigned, waiting to be
+    // planned. Re-export each period to refresh.
     S.chores.forEach(function(c){
       var ranges = periodRanges(c);
       if(!ranges) return;
@@ -3551,7 +3235,6 @@
     if(S.modal==="whenNext") root.appendChild(modalWhenNext());
     if(S.modal==="occurrence") root.appendChild(modalOccurrence());
     if(S.modal==="planWeek") root.appendChild(modalPlanWeek());
-    if(S.modal==="wizard") root.appendChild(modalWizard());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
 
