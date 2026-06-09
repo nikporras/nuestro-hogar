@@ -1011,29 +1011,6 @@
       render();
     }
   }
-  function cycleOccAssignee(ch, date){
-    var o = ensureOcc(ch, date);
-    var prev = o.assignee;
-    o.assignee = o.assignee == null ? 0 : (o.assignee === 0 ? 1 : null);
-    if(o.done){
-      var pts = effortOf(ch);
-      // Model the re-assignment as undo-on-old + redo-on-new so the cache stays
-      // accurate without a dedicated reassign code path. Pass o.doneAt so the
-      // baseline filter is consistent across both events. Clamp the refund at 0
-      // so partial-spending doesn't take a balance negative.
-      if(prev === 0 || prev === 1){
-        S.balances[prev] = Math.max(0, (S.balances[prev]||0) - pts);
-        recordEvent("task_undone", { chore: ch, date: date, assignee: prev, doneAt: o.doneAt });
-      }
-      if(o.assignee === 0 || o.assignee === 1){
-        S.balances[o.assignee] = (S.balances[o.assignee]||0) + pts;
-        recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
-        checkRumMilestones(o.assignee);
-      }
-    }
-    save(); render();
-  }
-
   // ---------- streak (Phase 4) ----------
   // A day counts toward a person's streak if they had >=1 occurrence assigned to them
   // that day AND all of those occurrences are marked done. Days where they had nothing
@@ -1279,7 +1256,7 @@
     return s;
   }
 
-  // Incremental write hook used by toggleDone / cycleOccAssignee. Kinds:
+  // Incremental write hook used by toggleDone / setOccAssignee. Kinds:
   //  - task_done   { chore, date, assignee, doneAt? }
   //  - task_undone { chore, date, assignee }
   // Reward / redemption events don't go through here — those badges read straight
@@ -1734,17 +1711,16 @@
     var eff  = effortOf(ch);
     var who  = occAssignee(ch, date);
     var lock = occPinned(ch, date);
+    var openSheet = function(){ openOccurrence(ch, date); };
     var children = [
-      h("div",{class:"check"+(done?" on":""), onClick:function(){ toggleDone(ch,date); }}, done?"✓":""),
-      h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:function(){ openEdit(ch); }}),
+      h("div",{class:"check"+(done?" on":""), onClick:function(e){ e.stopPropagation(); toggleDone(ch,date); }}, done?"✓":""),
+      h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:openSheet}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(lock?"🔒 ":"")+ch.name, onClick:function(){ openEdit(ch); }}),
+        h("div",{class:"card-name", style:"cursor:pointer", text:(lock?"🔒 ":"")+ch.name, onClick:openSheet}),
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          // Tap the person tag → cycle THIS occurrence's assignee only. Template default stays.
-          h("span",{class:"tag person", style:"background:"+pColor(who), text:pName(who),
-            onClick: lock ? function(){ openEdit(ch); } : function(){ cycleOccAssignee(ch, date); }})
+          h("span",{class:"tag person", style:"background:"+pColor(who), text:pName(who), onClick:openSheet})
         )
       )
     ];
@@ -1778,6 +1754,136 @@
     }
     S.occurrences[key] = { tombstone: true };
     save(); render();
+  }
+
+  // ---------- Occurrence sheet ----------
+  // One chore on one date. Opens from any chore card tap on Today/Week/Month.
+  // Replaces the old tap-cycle-assignee on the person tag, which silently
+  // wrote a per-occurrence override with no UI affordance for which surface
+  // (template vs occurrence) the user was actually editing.
+  var occSheetCtx = null;
+  function openOccurrence(ch, date){
+    occSheetCtx = { choreId: ch.id, date: new Date(date) };
+    S.modal = "occurrence"; render();
+  }
+  function closeOccurrence(){ occSheetCtx = null; S.modal = null; render(); }
+  function setOccAssignee(ch, date, to){
+    var o = ensureOcc(ch, date);
+    var prev = o.assignee;
+    if(prev === to) return;
+    o.assignee = to;
+    // Mirror the rebalance the old tap-cycle did: done occurrences need to
+    // swing their points to the new owner without going negative.
+    if(o.done){
+      var pts = effortOf(ch);
+      if(prev === 0 || prev === 1){
+        S.balances[prev] = Math.max(0, (S.balances[prev]||0) - pts);
+        recordEvent("task_undone", { chore: ch, date: date, assignee: prev, doneAt: o.doneAt });
+      }
+      if(o.assignee === 0 || o.assignee === 1){
+        S.balances[o.assignee] = (S.balances[o.assignee]||0) + pts;
+        recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
+        checkRumMilestones(o.assignee);
+      }
+    }
+    save(); render();
+  }
+  function moveOccurrence(ch, fromDate, toDate){
+    if(sameDay(fromDate, toDate)) return;
+    if(isDone(ch, fromDate)){ alert("This day is already done — undo it first to move it."); return; }
+    var toKey = occKey(ch.id, toDate);
+    var existing = S.occurrences[toKey];
+    if(existing && !existing.tombstone){
+      alert("'"+ch.name+"' is already on "+DOW_SHORT[toDate.getDay()]+" "+toDate.getDate()+".");
+      return;
+    }
+    // Carry the assignee from the source onto a pinned occurrence on the new
+    // date. Tombstone the source so isDue/ensureOccurrences don't re-place a
+    // card on the original day.
+    var srcAssignee = occAssignee(ch, fromDate);
+    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true };
+    S.occurrences[toKey] = { assignee: srcAssignee, done: false, doneAt: null, pinned: true };
+    occSheetCtx.date = new Date(toDate);
+    save(); render();
+  }
+  function modalOccurrence(){
+    if(!occSheetCtx) return h("div");
+    var ch = findChore(occSheetCtx.choreId);
+    if(!ch){ occSheetCtx = null; return h("div"); }
+    var date = occSheetCtx.date;
+    var done = isDone(ch, date);
+    var who = occAssignee(ch, date);
+    var fixed = !!ch.pinned && (ch.assignee === 0 || ch.assignee === 1);
+    function field(label, body){
+      return h("div",{style:"margin-top:14px;"},
+        h("div",{style:"font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;", text:label}),
+        body);
+    }
+    var topBar = h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{style:"margin:0;text-align:center;font-size:17px;",
+        text:(ch.icon?ch.icon+" ":"") + ch.name}),
+      h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;font-weight:700;margin-top:4px;letter-spacing:0.08em;text-transform:uppercase;",
+        text: DOW_SHORT[date.getDay()] + " " + date.getDate() + " " + MONTHS[date.getMonth()].slice(0,3)})
+    );
+    var doneBtn = h("button",{
+      style:"width:100%;padding:13px;border:none;border-radius:13px;background:"+(done?"var(--soft-accent)":"linear-gradient(135deg,var(--accent1),var(--accent2))")+";color:"+(done?"var(--soft-accent-text)":"#fff")+";font:inherit;font-weight:800;font-size:14.5px;cursor:pointer;",
+      onClick:function(){ toggleDone(ch, date); /* re-renders */ },
+      text: done ? "↺ Undo done" : "✓ Mark done"
+    });
+    var assignSeg = h("div",{class:"seg"});
+    [null, 0, 1].forEach(function(p){
+      var on = (who === p);
+      assignSeg.appendChild(h("button",{
+        class:(on?"on":""),
+        onClick: fixed
+          ? function(){ alert("Fixed assignee — change it in Edit the task."); }
+          : function(){ setOccAssignee(ch, date, p); },
+        text: (p == null ? "Anyone" : S.names[p])
+      }));
+    });
+    var wkStart = startOfWeek(date);
+    var dayPick = h("div",{style:"display:flex;gap:4px;"});
+    for(var i=0;i<7;i++){
+      (function(){
+        var d = addDays(wkStart, i);
+        var picked = sameDay(d, date);
+        var disabled = done;
+        var bg = picked ? "var(--accent1)" : "var(--surface)";
+        var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
+        dayPick.appendChild(h("button",{
+          style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+          onClick: disabled ? null : function(){ moveOccurrence(ch, date, d); }
+        },
+          h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
+          h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
+        ));
+      })();
+    }
+    var skipBtn = h("button",{
+      style:"width:100%;padding:11px;border:1.5px solid var(--danger);background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;font-size:13px;border-radius:11px;cursor:pointer;margin-top:14px;",
+      onClick:function(){
+        if(!confirm("Skip '"+ch.name+"' for this day? It'll still appear on its other scheduled days.")) return;
+        skipOccurrence(ch, date);
+        occSheetCtx = null; S.modal = null;
+      },
+      text: "× Skip this day"
+    });
+    var editLink = h("button",{
+      style:"width:100%;margin-top:8px;padding:11px;border:none;background:transparent;color:var(--accent2);font:inherit;font-weight:700;font-size:13px;cursor:pointer;text-align:center;",
+      onClick: function(){ occSheetCtx = null; openEdit(ch); },
+      text: "Edit the task →"
+    });
+    var body = h("div",{class:"modal-scroll"},
+      doneBtn,
+      field("Assignee" + (fixed ? " · fixed" : ""), assignSeg),
+      field("Move day", dayPick),
+      skipBtn,
+      editLink
+    );
+    var sheet = h("div",{class:"modal tall"}, topBar, body);
+    attachSwipeClose(topBar, sheet, closeOccurrence);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeOccurrence(); } }}, sheet);
   }
 
   function reminderCard(r){
@@ -3117,6 +3223,7 @@
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
     if(S.modal==="whenNext") root.appendChild(modalWhenNext());
+    if(S.modal==="occurrence") root.appendChild(modalOccurrence());
     if(S.modal==="wizard") root.appendChild(modalWizard());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
   }
