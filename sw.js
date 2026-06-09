@@ -10,7 +10,7 @@
  *  - Non-GET requests are never touched.
  */
 
-const CACHE = "nuestro-hogar-v88";
+const CACHE = "nuestro-hogar-v89";
 
 // The app shell. Keep this list explicit — only known static assets.
 const SHELL = [
