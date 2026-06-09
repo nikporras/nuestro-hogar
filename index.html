@@ -3040,7 +3040,7 @@
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null) d.pinned=false; render(); }, text:(p==null?"Nobody":S.names[p])})); });
     var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"var(--border)")+";border-radius:11px;background:"+(d.pinned?"var(--soft-accent)":"var(--input-bg)")+";color:"+(d.pinned?"var(--soft-accent-text)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
       onClick:function(){ d.pinned=!d.pinned; render(); },
-      text:(d.pinned?"🔒 Locked to "+S.names[d.assignee]+" — tap to unlock (back in shuffle pool)":"🔓 In the shuffle pool — tap to lock to "+S.names[d.assignee]) });
+      text:(d.pinned?"🔒 Always "+S.names[d.assignee]+" — tap to unfix":"🔓 Free — tap to always be "+S.names[d.assignee]) });
 
     var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn) ];
     // Linked task toggle + parent / days inputs. When linked, schedule fields are
@@ -3102,7 +3102,41 @@
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
-    if(d.assignee!=null) modalBody.push(field("Lock", pinBtn));
+    if(d.assignee!=null) modalBody.push(field("Fixed assignee", pinBtn));
+    // Read-only "Used this week" — the recurring definition stays clean, but
+    // we still show where this chore landed this week so you can hop into the
+    // Occurrence sheet to edit just that date. Editing existing chores only.
+    if(editingId){
+      var existing = findChore(editingId);
+      if(existing){
+        var weekStart = startOfWeek(TODAY);
+        var weekEnd = addDays(weekStart, 6);
+        var usages = [];
+        for(var dU = new Date(weekStart); dU <= weekEnd; dU = addDays(dU, 1)){
+          var oU = S.occurrences[occKey(existing.id, dU)];
+          if(oU && oU.tombstone) continue;
+          if(!oU && !scheduleDue(existing, dU)) continue;
+          usages.push({ date: new Date(dU), occ: oU || null });
+        }
+        if(usages.length){
+          var usageList = h("div",{style:"display:flex;flex-direction:column;gap:6px;"});
+          usages.forEach(function(u){
+            var label = DOW_SHORT[u.date.getDay()] + " " + u.date.getDate() + " " + MONTHS[u.date.getMonth()].slice(0,3);
+            var who = u.occ ? u.occ.assignee : existing.assignee;
+            var whoLabel = (who == null ? "Anyone" : S.names[who]);
+            var status = u.occ && u.occ.done ? " · done" : "";
+            usageList.appendChild(h("button",{
+              style:"display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;background:var(--input-bg);color:var(--text);font:inherit;font-weight:600;font-size:13px;cursor:pointer;text-align:left;",
+              onClick: function(){ closeAdd(); openOccurrence(existing, u.date); },
+            },
+              h("span",{text: label}),
+              h("span",{style:"color:var(--muted);font-size:12px;", text: whoLabel + status + "  ›"})
+            ));
+          });
+          modalBody.push(field("Used this week", usageList));
+        }
+      }
+    }
     modalBody.push(h("div",{class:"modal-actions"},
       h("button",{class:"btn ghost", text:"Cancel", onClick:closeAdd}),
       h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){ if(commitDraft()) render(); }})
