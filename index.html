@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v91";
+  var APP_VERSION = "v92";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2189,7 +2189,13 @@
     var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth() + (monthOffset||0), 1);
     var mLast  = new Date(mFirst.getFullYear(), mFirst.getMonth() + 1, 0);
     var weeks = [];
+    // Only weeks that haven't ended yet — the Planning sheet is for "what's
+    // still ahead". Past weeks are a closed chapter; if you come back from
+    // a holiday and open the sheet, you don't have to scroll past blocks
+    // you already missed.
     for(var d = startOfWeek(mFirst); d <= mLast; d = addDays(d, 7)){
+      var weekEnd = addDays(d, 6);
+      if(weekEnd < TODAY) continue;
       weeks.push(new Date(d));
     }
     return { weeks: weeks, mFirst: mFirst, mLast: mLast };
@@ -2305,10 +2311,13 @@
     var off = planMonthCtx.monthOffset || 0;
     var data = planMonthWorkload(off);
     var monthLabel = MONTHS[data.mFirst.getMonth()] + " " + data.mFirst.getFullYear();
+    // Back arrow disabled at the current month — you can't plan the past.
+    var backDisabled = off <= 0;
     var navRow = h("div",{style:"display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 6px;"},
       h("button",{
-        style:"border:none;background:var(--surface);color:var(--accent2);font-size:18px;font-weight:800;width:34px;height:34px;border-radius:50%;cursor:pointer;",
-        onClick:function(){ planMonthCtx.monthOffset = off - 1; render(); }, text:"‹"
+        style:"border:none;background:"+(backDisabled?"transparent":"var(--surface)")+";color:var(--accent2);font-size:18px;font-weight:800;width:34px;height:34px;border-radius:50%;cursor:"+(backDisabled?"default":"pointer")+";opacity:"+(backDisabled?"0.2":"1")+";",
+        onClick: backDisabled ? null : function(){ planMonthCtx.monthOffset = off - 1; render(); },
+        text:"‹"
       }),
       h("div",{style:"font-weight:800;font-size:15px;text-align:center;", text:monthLabel}),
       h("button",{
@@ -2322,7 +2331,9 @@
       h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+data.total[1]+" pt"})
     );
     var totalsLine = h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;font-weight:700;margin-top:4px;letter-spacing:0.06em;",
-      text: data.totalPts + " pt total · " + data.weeks.length + " week" + (data.weeks.length===1?"":"s")});
+      text: data.weeks.length === 0
+        ? "Nothing ahead this month"
+        : data.totalPts + " pt total · " + data.weeks.length + " week" + (data.weeks.length===1?"":"s") + " left"});
     var topBar = h("div",{class:"sheet-top"},
       h("div",{class:"grab"}),
       h("h3",{style:"margin:0 0 2px;font-size:17px;text-align:center;", text:"🔀 Plan the month"}),
@@ -2332,7 +2343,7 @@
     );
     var listEl = h("div",{class:"modal-scroll", style:"margin-top:10px;"});
     if(data.weeks.length === 0){
-      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:24px 8px;", text:"No weeks to plan."}));
+      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:32px 8px;", text:"No weeks left to plan in "+monthLabel+"."}));
     } else {
       data.weeks.forEach(function(wk){
         var weekEnd = addDays(wk.weekStart, 6);
@@ -2832,18 +2843,24 @@
     var in1=h("input",{type:"text", value:nameDraft[1], onInput:function(e){ nameDraft[1]=e.target.value; }});
     var deviceSeg=h("div",{class:"seg"});
     [0,1].forEach(function(p){ deviceSeg.appendChild(h("button",{class:(S.deviceUser===p?"on":""), onClick:function(){ setDeviceUser(p); }, text:S.names[p]})); });
+    // Single dismiss path: Close always commits any name edits and closes.
+    // Everything else in Settings (holiday, notifications, backup, danger
+    // actions) already saves the moment you tap, so there's no concept of
+    // pending changes outside of names.
+    function commitAndClose(){
+      var n0 = (nameDraft[0].trim() || "Person 1");
+      var n1 = (nameDraft[1].trim() || "Person 2");
+      if(n0 !== S.names[0] || n1 !== S.names[1]){
+        S.names = [n0, n1];
+        save();
+      }
+      S.modal = null; render();
+    }
 
     var children=[ h("h3",{text:"Settings"}),
       field("Person 1", in0),
       field("Person 2", in1),
-      field("This phone is used by", deviceSeg),
-      h("div",{class:"modal-actions"},
-        h("button",{class:"btn ghost", text:"Cancel", onClick:function(){ S.modal=null; render(); }}),
-        h("button",{class:"btn primary", text:"Save names", onClick:function(){
-          S.names=[ (nameDraft[0].trim()||"Person 1"), (nameDraft[1].trim()||"Person 2") ];
-          save(); S.modal=null; render();
-        }})
-      )
+      field("This phone is used by", deviceSeg)
     ];
 
     // Holiday mode — global pause: hides every upcoming chore card on
@@ -2930,7 +2947,10 @@
       h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:function(){ if(confirm("Sign out of "+(myEmail()||"this account")+"? Your data stays safe in the cloud.")){ S.modal=null; signOut(); } }, text:"Sign out" })
     );
     children.push(h("div",{style:"text-align:center;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:0.08em;margin-top:18px;opacity:0.7;", text:"Olympaws "+APP_VERSION}));
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
+    children.push(h("div",{class:"modal-actions", style:"margin-top:14px;"},
+      h("button",{class:"btn primary", style:"width:100%;", text:"Close", onClick: commitAndClose})
+    ));
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ commitAndClose(); } }},
       h("div",{class:"modal"}, children));
   }
 
