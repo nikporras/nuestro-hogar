@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v94";
+  var APP_VERSION = "v95";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3204,11 +3204,33 @@
 
   // Floating top-right HUD: the device user's streak + Purr balance. Stays fixed
   // through scrolling, taps jump straight to the Stats tab where the source lives.
+  // Manual pull, for when the 10s background poll feels slow (other phone
+  // just marked something done and you want to see it now). syncingAt is
+  // device-local — it drives a brief visual on the refresh chip so the tap
+  // feels responsive even when nothing's changed remotely.
+  var syncingAt = 0;
+  function manualPull(){
+    if(!isAuthed()) return;
+    syncingAt = Date.now();
+    pullState();
+    render();
+    setTimeout(function(){
+      if(Date.now() - syncingAt >= 700){ syncingAt = 0; render(); }
+    }, 800);
+  }
   function topHud(){
     var p = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
     var streak = computeStreak(p);
     var bal = S.balances && (S.balances[p] != null) ? S.balances[p] : 0;
-    var wrap = h("div",{class:"topbar"});
+    var syncing = syncingAt && (Date.now() - syncingAt < 800);
+    var wrap = h("div",{class:"topbar", style:"gap:6px;"});
+    var refreshBtn = h("button",{
+      class:"topchip",
+      style:"padding:6px 10px;font-size:15px;font-weight:800;"+(syncing?"opacity:0.55;":""),
+      title:"Pull latest from the cloud",
+      onClick: manualPull,
+      text: syncing ? "…" : "↻"
+    });
     var chip = h("button",{class:"topchip", onClick:function(){ S.tab="logros"; render(); }},
       h("img",{src:"./icons/streak.png", alt:"streak", style:"width:18px;height:18px;"}),
       h("span",{text:String(streak)}),
@@ -3216,6 +3238,7 @@
       h("img",{src:"./icons/purr.png", alt:"Purrs", style:"width:14px;height:14px;"}),
       h("span",{text:String(bal)})
     );
+    wrap.appendChild(refreshBtn);
     wrap.appendChild(chip);
     return wrap;
   }
