@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v105";
+  var APP_VERSION = "v106";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -630,7 +630,54 @@
         }
       }
     }
+    syncAfterChores();
     pruneOldTombstones();
+  }
+  // After-chores derive their dates from a parent + N days. The live
+  // cascade hooks (cascadeAddAfter / cascadeRemoveAfter) keep the two in
+  // sync as you tap in the planner; this pass cleans up the data on
+  // startup / pull: orphan child occurrences whose parent date isn't
+  // scheduled get dropped, and child occurrences get backfilled wherever
+  // a parent is scheduled but the child isn't.
+  function syncAfterChores(){
+    if(!S.occurrences) return;
+    var children = S.chores.filter(function(c){ return c.linkedAfter && c.linkedAfter.taskId; });
+    if(children.length === 0) return;
+    // 1) drop orphans — leave done ones alone so completion history stays.
+    children.forEach(function(c){
+      var n = c.linkedAfter.days || 1;
+      var idStr = String(c.id);
+      Object.keys(S.occurrences).forEach(function(key){
+        var dash = key.indexOf("_"); if(dash < 0) return;
+        if(key.slice(0, dash) !== idStr) return;
+        var o = S.occurrences[key];
+        if(!o || o.done || o.tombstone) return;
+        var dStr = key.slice(dash + 1);
+        var sp = dStr.split("-");
+        var d = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+        var parentKey = occKey(c.linkedAfter.taskId, addDays(d, -n));
+        var po = S.occurrences[parentKey];
+        if(!po || po.tombstone) delete S.occurrences[key];
+      });
+    });
+    // 2) backfill — every live parent occurrence gets a child at +N.
+    children.forEach(function(c){
+      var n = c.linkedAfter.days || 1;
+      var parentIdStr = String(c.linkedAfter.taskId);
+      var defaultAssignee = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+      Object.keys(S.occurrences).forEach(function(key){
+        var dash = key.indexOf("_"); if(dash < 0) return;
+        if(key.slice(0, dash) !== parentIdStr) return;
+        var po = S.occurrences[key];
+        if(!po || po.tombstone) return;
+        var dStr = key.slice(dash + 1);
+        var sp = dStr.split("-");
+        var pd = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+        var childKey = occKey(c.id, addDays(pd, n));
+        if(S.occurrences[childKey]) return;
+        S.occurrences[childKey] = { assignee: defaultAssignee, done: false, doneAt: null, pinned: true };
+      });
+    });
   }
   // Drop the obsolete plannedWeeks shape on sight — pre-occurrences clients
   // are well past their shelf life. No need to migrate to tombstones since
