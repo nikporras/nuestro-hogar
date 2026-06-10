@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v104";
+  var APP_VERSION = "v105";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -309,7 +309,10 @@
     }
     switch(c.freq){
       case "Daily":    return { kind:"daily" };
-      case "Weekly":   return { kind:"weekly",   times: Math.max(1, Math.min(7, c.timesPerWeek || 1)) };
+      // Fall back to the legacy weekdays.length when timesPerWeek isn't set,
+      // so chores carried over from the anchored-schedule era keep the right
+      // cadence label without forcing a re-edit. e.g. weekdays:[1,4] → 2×.
+      case "Weekly":   return { kind:"weekly",   times: Math.max(1, Math.min(7, c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1)) };
       case "Biweekly": return { kind:"biweekly" };
       case "Monthly":  return { kind:"monthly" };
     }
