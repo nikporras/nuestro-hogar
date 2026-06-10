@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v100";
+  var APP_VERSION = "v101";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2403,6 +2403,32 @@
           listEl.appendChild(row);
         });
       });
+    }
+    // Diagnostic footer: list every chore that produced zero rows this month,
+    // plus the schedule-kind + anchor we computed, so we can see exactly why
+    // it's being filtered. Helps the user verify their config AND catches
+    // the case where the planner silently drops a chore the user expected.
+    var shownChoreIds = {};
+    data.weeks.forEach(function(wk){
+      wk.rows.forEach(function(r){ shownChoreIds[String(r.chore.id)] = true; });
+    });
+    var hidden = [];
+    S.chores.forEach(function(c){
+      if(shownChoreIds[String(c.id)]) return;
+      var sch = getSchedule(c);
+      hidden.push({ chore: c, kind: sch.kind, anchor: sch.anchor || sch.dayOfMonth || (sch.days ? sch.days.join(",") : "—") });
+    });
+    if(hidden.length){
+      var hideBox = h("div",{style:"margin-top:14px;padding:10px 12px;border:1px dashed var(--border);border-radius:11px;background:var(--input-bg);"});
+      hideBox.appendChild(h("div",{style:"font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;",
+        text:"Not showing this month ("+hidden.length+")"}));
+      hidden.forEach(function(h_){
+        hideBox.appendChild(h("div",{style:"font-size:12px;color:var(--text);margin:3px 0;",
+          text: (h_.chore.icon||"·") + " " + h_.chore.name + "  ·  " + h_.kind + "  ·  " + h_.anchor }));
+      });
+      hideBox.appendChild(h("div",{style:"font-size:10.5px;color:var(--muted);margin-top:6px;",
+        text:"Reason: no natural-due dates in any week left in "+MONTHS[data.mFirst.getMonth()]+"."}));
+      listEl.appendChild(hideBox);
     }
     var closeBtn = h("button",{
       class:"btn primary",
