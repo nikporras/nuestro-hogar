@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v97";
+  var APP_VERSION = "v98";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2372,9 +2372,15 @@
             var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
             var fg = picked ? "#fff" : "var(--text)";
             var border = picked ? bg : "var(--border)";
+            // Locked rows surface an alert on tap rather than going silent —
+            // discoverable so the user knows to open the Task editor to unfix.
+            // allDone rows stay completely inert (no message to show).
+            var onTap = disabled
+              ? (fixedBlock ? (function(ch){ return function(){ alert("'"+ch.name+"' is locked to "+S.names[ch.assignee]+". Open the task and turn off Fixed assignee to plan it per week."); }; })(r.chore) : null)
+              : function(){ planWeekSetAssignee(r, p); };
             personPick.appendChild(h("button",{
-              style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";",
-              onClick: disabled ? null : function(){ planWeekSetAssignee(r, p); },
+              style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:"+(disabled?(fixedBlock?"pointer":"default"):"pointer")+";opacity:"+(disabled?"0.4":"1")+";",
+              onClick: onTap,
               text: label
             }));
           });
@@ -3273,6 +3279,16 @@
   }
 
   function render(){
+    // Save modal-scroll positions BEFORE wiping the DOM. Every assignee /
+    // schedule tap rebuilds the tree from scratch, which would otherwise
+    // dump the user back at the top of whatever sheet they were in. Keyed
+    // by index because there's typically one modal-scroll at a time, but
+    // matching by order handles edge cases too.
+    var savedScrolls = Array.prototype.map.call(
+      document.querySelectorAll(".modal-scroll"),
+      function(el){ return el.scrollTop; }
+    );
+    var savedPageY = window.scrollY || window.pageYOffset || 0;
     var root=document.getElementById("root");
     root.innerHTML="";
     if(!isAuthed()){ document.body.classList.remove("modal-open"); root.appendChild(viewLogin()); return; }
@@ -3299,6 +3315,13 @@
     if(S.modal==="occurrence") root.appendChild(modalOccurrence());
     if(S.modal==="planMonth") root.appendChild(modalPlanMonth());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
+    // Restore scroll positions on the fresh DOM. Done synchronously so the
+    // user doesn't see a flash at the top before snapping back.
+    var newScrolls = document.querySelectorAll(".modal-scroll");
+    savedScrolls.forEach(function(top, i){
+      if(newScrolls[i]) newScrolls[i].scrollTop = top;
+    });
+    if(savedPageY) window.scrollTo(0, savedPageY);
   }
 
   captureAuthFromHash();
