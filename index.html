@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v96";
+  var APP_VERSION = "v97";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -360,7 +360,11 @@
     switch(c.freq){
       case "Daily":    return { kind:"daily",          days: (c.weekdays && c.weekdays.length) ? c.weekdays.slice() : null };
       case "Weekly":   return { kind:"weekly",         days: c.weekdays || [] };
-      case "Biweekly": return { kind:"biweekly",       anchor: c.startDate || null };
+      // Anchor falls back to today so a Biweekly / Monthly chore without a
+      // stored startDate (older data, partial edits) still has a valid
+      // cadence and shows up in the planner. Without this the row vanishes
+      // silently because scheduleDue can't compute against a null anchor.
+      case "Biweekly": return { kind:"biweekly",       anchor: c.startDate || ymd(TODAY) };
       case "Monthly":  return c.startDate
                               ? { kind:"monthly_cycle", anchor: c.startDate }
                               : { kind:"monthly_dom",   dayOfMonth: c.dayOfMonth || 1 };
