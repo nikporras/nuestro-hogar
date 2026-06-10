@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v103";
+  var APP_VERSION = "v104";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1621,15 +1621,17 @@
           h("span",{style:"font-size:18px;font-weight:800;", text:"›"})
         ));
       } else {
-        // Count pending rows across the current month so the cue reflects the
-        // monthly plan. Only the unassigned-and-pending rows count.
+        // Count rows that have days scheduled but no person yet — those are
+        // the ones the user actually still has to decide on. Empty rows
+        // (no days picked) are silent: nothing to nudge until something's
+        // on the board.
         var pendingCount = 0;
         var dataCue = planMonthWorkload(0);
         dataCue.weeks.forEach(function(wk){
           wk.rows.forEach(function(r){
             if(r.allDone || r.mixed) return;
+            if(r.scheduledCount === 0) return;
             if(r.assignee === 0 || r.assignee === 1) return;
-            if(r.pendingDates.length === 0) return;
             pendingCount++;
           });
         });
@@ -3026,7 +3028,7 @@
         for(var i=0;i<rows.length;i++){
           var r = rows[i];
           if(r.allDone || r.mixed) continue;
-          if(r.pendingDates.length === 0) continue;
+          if(r.scheduledCount === 0) continue;
           if(r.assignee === 0 || r.assignee === 1) continue;
           return false;
         }
