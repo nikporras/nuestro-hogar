@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v101";
+  var APP_VERSION = "v102";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -386,6 +386,18 @@
   // Biweekly helpers: the weekday a date-string lands on, and the next such weekday from today.
   function weekdayOfYMD(s){ var p=String(s).split("-"); return new Date(+p[0],(+p[1])-1,+p[2]).getDay(); }
   function nextWeekdayYMD(w){ var d=new Date(TODAY); var add=(w - d.getDay() + 7)%7; d.setDate(d.getDate()+add); return ymd(d); }
+  // The instance of weekday w in TODAY's Mon-Sun week — past days count.
+  // Used by the Task editor's biweekly / monthly weekday picker so anchoring
+  // 'Tue' on Wed sets Jun 9 (yesterday), not Jun 16 (next Tue). Biweekly
+  // cadence is anchor + 14n, so a far-future anchor pushed every first
+  // natural-due date out of the current planning month — the v101
+  // diagnostic footer caught all of v100's biweekly anchors sitting in
+  // July when the user intended them for June.
+  function weekdayInThisWeekYMD(w){
+    var mon = startOfWeek(TODAY);
+    var offset = (w + 6) % 7; // Mon=0..Sun=6
+    return ymd(addDays(mon, offset));
+  }
   // Human-readable "when does this happen" used across the overview & cards.
   function scheduleLabel(c){
     var sch = getSchedule(c);
@@ -2805,9 +2817,26 @@
         var selW=weekdayOfYMD(d.startDate);
         MON_FIRST.forEach(function(dow){
           bdp.appendChild(h("button",{class:(selW===dow?"on":""),
-            onClick:function(){ d.startDate=nextWeekdayYMD(dow); render(); }, text:DOW_SHORT[dow]}));
+            onClick:function(){ d.startDate=weekdayInThisWeekYMD(dow); render(); }, text:DOW_SHORT[dow]}));
         });
         modalBody.push(field(d.freq==="Biweekly"?"Every 2 weeks on":"Every 4 weeks on", bdp));
+        // Re-anchor: if the stored anchor sits in a different week from
+        // today's, surface a one-tap reset so existing chores with stale
+        // (or far-future) anchors can be fixed without re-tapping the
+        // weekday. Common after editing across phone-clock changes.
+        var anchorWeekStart = startOfWeek((function(){
+          var sp = String(d.startDate||"").split("-");
+          return new Date(+sp[0], (+sp[1])-1, +sp[2]);
+        })());
+        var todayWeekStart = startOfWeek(TODAY);
+        if(d.startDate && !sameDay(anchorWeekStart, todayWeekStart)){
+          var reAnchorBtn = h("button",{
+            style:"width:100%;margin-top:8px;padding:10px;border:1.5px dashed var(--accent2);border-radius:11px;background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
+            onClick:function(){ d.startDate=weekdayInThisWeekYMD(selW); render(); },
+            text:"↺ Re-anchor to this week ("+DOW_SHORT[selW]+" "+addDays(todayWeekStart, (selW+6)%7).getDate()+")"
+          });
+          modalBody.push(reAnchorBtn);
+        }
       }
     }
     modalBody.push(field("Difficulty", diffSeg));
