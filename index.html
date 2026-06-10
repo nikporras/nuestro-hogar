@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v99";
+  var APP_VERSION = "v100";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2219,12 +2219,19 @@
     var doneCount = 0, tombCount = 0, pendingDates = [];
     dates.forEach(function(d){
       var o = S.occurrences[occKey(c.id, d)];
-      if(o && o.tombstone){ tombCount++; return; }
+      // Done dates are immutable from the Planner — they count toward
+      // doneCount and contribute to the displayed assignee, but tapping
+      // doesn't reassign them (use the Occurrence sheet to undo first).
       if(o && o.done){
         doneCount++;
         seen[String(o.assignee)] = (seen[String(o.assignee)]||0) + 1;
         return;
       }
+      // Tombstoned dates (skipped previously, or wiped by Start fresh) ARE
+      // assignable from here — tapping a person rewrites them as a fresh
+      // pinned occurrence. The Planner is a re-planning surface, so the
+      // user expects "pick a person" to override prior decisions.
+      if(o && o.tombstone){ tombCount++; pendingDates.push(new Date(d)); return; }
       var who = o ? o.assignee : "__unset";
       seen[String(who)] = (seen[String(who)]||0) + 1;
       pendingDates.push(new Date(d));
@@ -2263,13 +2270,10 @@
     if(info.fixed) return;
     info.pendingDates.forEach(function(d){
       var key = occKey(info.chore.id, d);
-      var o = S.occurrences[key];
-      if(!o){
-        S.occurrences[key] = { assignee: to, done: false, doneAt: null, pinned: true };
-      } else {
-        o.assignee = to;
-        o.pinned = true;
-      }
+      // Always overwrite — pendingDates can include tombstones, which need
+      // to be replaced by a fresh pinned occurrence so the chore actually
+      // surfaces on Today / Week / Month again.
+      S.occurrences[key] = { assignee: to, done: false, doneAt: null, pinned: true };
     });
     save(); render();
   }
