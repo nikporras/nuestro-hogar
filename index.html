@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v102";
+  var APP_VERSION = "v103";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -290,115 +290,33 @@
     return null;
   }
   // ---------- single source of truth for scheduling ----------
-  // The ONLY function that decides whether a chore shows on a given date.
-  // Linked chores derive their schedule from their parent: A linked-after B by N days
-  // is due on D iff B is due on D - N. A depth guard catches accidental cycles.
-  // A tombstone on the occurrence ("user moved this away") suppresses the date at
-  // every level of the cascade, so a parent's tombstone also hides its dependents.
-  function isDue(ch, date){ return isDueDepth(ch, date, 0); }
-  function isDueDepth(ch, date, depth){
-    // S itself doesn't exist yet while the `var S = { ... }` init expression
-    // is being evaluated (seedDoneLog calls back through here), so guard the
-    // dereference — no occurrences yet means no tombstones to honour.
-    if(typeof S !== "undefined" && S.occurrences){
-      var o0 = S.occurrences[occKey(ch.id, date)];
-      if(o0 && o0.tombstone) return false;
-    }
-    return scheduleDueDepth(ch, date, depth);
-  }
-  // Pure schedule check — ignores tombstones. The Planning sheet uses this so
-  // skipped rows still surface (you can un-skip them); isDueDepth wraps this
-  // with the tombstone short-circuit for everyone else.
-  function scheduleDue(ch, date){ return scheduleDueDepth(ch, date, 0); }
-  function scheduleDueDepth(ch, date, depth){
-    if(depth > 4) return false; // cycle / over-chain guard
-    var sch = getSchedule(ch);
-    switch(sch.kind){
-      case "after": {
-        var parent = findChore(sch.parentId);
-        if(!parent) return false;
-        return scheduleDueDepth(parent, addDays(date, -(sch.days||1)), depth + 1);
-      }
-      case "daily":
-        return (sch.days && sch.days.length) ? sch.days.indexOf(date.getDay()) >= 0 : true;
-      case "weekly":
-        return (sch.days || []).indexOf(date.getDay()) >= 0;
-      case "biweekly": {
-        if(!sch.anchor) return false;
-        var sp = String(sch.anchor).split("-");
-        var anchor = new Date(+sp[0], (+sp[1])-1, +sp[2]); anchor.setHours(0,0,0,0);
-        var d2 = new Date(date); d2.setHours(0,0,0,0);
-        var diff = daysBetween(anchor, d2);
-        return diff >= 0 && diff % 14 === 0;
-      }
-      case "monthly_cycle": {
-        if(!sch.anchor) return false;
-        var sp2 = String(sch.anchor).split("-");
-        var anchor2 = new Date(+sp2[0], (+sp2[1])-1, +sp2[2]); anchor2.setHours(0,0,0,0);
-        var d3 = new Date(date); d3.setHours(0,0,0,0);
-        var diff2 = daysBetween(anchor2, d3);
-        return diff2 >= 0 && diff2 % 28 === 0;
-      }
-      case "monthly_dom":
-        return date.getDate() === sch.dayOfMonth;
-      default:
-        return false;
-    }
+  // Whether the chore "appears" on a given date — used by views that pre-date
+  // the model rewrite. With templates carrying no schedule, "appears" simply
+  // means there's a non-tombstone occurrence record. Kept as a thin wrapper
+  // because so many callers read it.
+  function isDue(ch, date){
+    if(!S.occurrences) return false;
+    var o = S.occurrences[occKey(ch.id, date)];
+    return !!(o && !o.tombstone);
   }
 
-  // Returns a discriminated-union schedule for a chore. Reads c.schedule directly
-  // when present (the new shape), otherwise lifts it from the legacy fields
-  // (freq + weekdays / startDate / dayOfMonth, or linkedAfter). Every consumer
-  // (isDue, scheduleLabel, usesWeekdays, scheduleAfterDone) dispatches on
-  // sch.kind so adding a new schedule kind only touches getSchedule + each
-  // consumer's switch.
+  // Templates store cadence only — no days, no anchor. The Planning sheet is
+  // the single source of truth for occurrence dates; getSchedule just maps
+  // freq to a tagged kind so the rest of the code stays switchable.
   function getSchedule(c){
-    if(c.schedule && c.schedule.kind) return c.schedule;
     if(c.linkedAfter && c.linkedAfter.taskId){
       return { kind:"after", parentId: c.linkedAfter.taskId, days: c.linkedAfter.days || 1 };
     }
     switch(c.freq){
-      case "Daily":    return { kind:"daily",          days: (c.weekdays && c.weekdays.length) ? c.weekdays.slice() : null };
-      case "Weekly":   return { kind:"weekly",         days: c.weekdays || [] };
-      // Anchor falls back to today so a Biweekly / Monthly chore without a
-      // stored startDate (older data, partial edits) still has a valid
-      // cadence and shows up in the planner. Without this the row vanishes
-      // silently because scheduleDue can't compute against a null anchor.
-      case "Biweekly": return { kind:"biweekly",       anchor: c.startDate || ymd(TODAY) };
-      case "Monthly":  return c.startDate
-                              ? { kind:"monthly_cycle", anchor: c.startDate }
-                              : { kind:"monthly_dom",   dayOfMonth: c.dayOfMonth || 1 };
+      case "Daily":    return { kind:"daily" };
+      case "Weekly":   return { kind:"weekly",   times: Math.max(1, Math.min(7, c.timesPerWeek || 1)) };
+      case "Biweekly": return { kind:"biweekly" };
+      case "Monthly":  return { kind:"monthly" };
     }
     return { kind:"none" };
   }
-  // After-done hook owned by the schedule kind. Returns the action to take, or
-  // null. toggleDone reads this instead of branching on freq itself, so adding a
-  // new cycle-style kind doesn't touch toggleDone.
-  function scheduleAfterDone(c){
-    var sch = getSchedule(c);
-    if(sch.kind === "biweekly")      return { kind:"pickNext", cycleDays: 14 };
-    if(sch.kind === "monthly_cycle") return { kind:"pickNext", cycleDays: 28 };
-    return null;
-  }
 
-  // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
-  function sortedWeekdays(arr){ return (arr||[]).slice().sort(function(a,b){ return ((a+6)%7)-((b+6)%7); }); }
-  // Biweekly helpers: the weekday a date-string lands on, and the next such weekday from today.
-  function weekdayOfYMD(s){ var p=String(s).split("-"); return new Date(+p[0],(+p[1])-1,+p[2]).getDay(); }
-  function nextWeekdayYMD(w){ var d=new Date(TODAY); var add=(w - d.getDay() + 7)%7; d.setDate(d.getDate()+add); return ymd(d); }
-  // The instance of weekday w in TODAY's Mon-Sun week — past days count.
-  // Used by the Task editor's biweekly / monthly weekday picker so anchoring
-  // 'Tue' on Wed sets Jun 9 (yesterday), not Jun 16 (next Tue). Biweekly
-  // cadence is anchor + 14n, so a far-future anchor pushed every first
-  // natural-due date out of the current planning month — the v101
-  // diagnostic footer caught all of v100's biweekly anchors sitting in
-  // July when the user intended them for June.
-  function weekdayInThisWeekYMD(w){
-    var mon = startOfWeek(TODAY);
-    var offset = (w + 6) % 7; // Mon=0..Sun=6
-    return ymd(addDays(mon, offset));
-  }
-  // Human-readable "when does this happen" used across the overview & cards.
+  // Human-readable cadence shown in Tasks / chore details.
   function scheduleLabel(c){
     var sch = getSchedule(c);
     switch(sch.kind){
@@ -406,21 +324,13 @@
         var parent = findChore(sch.parentId);
         return "After " + (parent ? parent.name : "?") + " · +" + sch.days + " day" + (sch.days>1?"s":"");
       }
-      case "daily":
-        return sch.days && sch.days.length ? sortedWeekdays(sch.days).map(function(d){return DOW_SHORT[d];}).join(" · ") : "Every day";
-      case "weekly":
-        return sch.days && sch.days.length ? sortedWeekdays(sch.days).map(function(d){return DOW_SHORT[d];}).join(" · ") : "No day set";
-      case "biweekly":
-        return sch.anchor ? "Every 2 weeks · "+DOW_SHORT[weekdayOfYMD(sch.anchor)] : "Every 2 weeks";
-      case "monthly_cycle":
-        return sch.anchor ? "Every 4 weeks · "+DOW_SHORT[weekdayOfYMD(sch.anchor)] : "Every 4 weeks";
-      case "monthly_dom":
-        return "Day " + sch.dayOfMonth + " each month";
+      case "daily":    return "Every day";
+      case "weekly":   return sch.times > 1 ? (sch.times + "× a week") : "Once a week";
+      case "biweekly": return "Every 2 weeks";
+      case "monthly":  return "Once a month";
     }
     return "";
   }
-  // Tasks whose day is a weekday choice (so we can show quick day-chips).
-  function usesWeekdays(c){ var k = getSchedule(c).kind; return k === "daily" || k === "weekly"; }
   // "Should this chore's card show on this day?" — true iff an explicit
   // per-occurrence record exists (and isn't a tombstone), or a legacy
   // doneLog hit covers this date. No template fallback: the calendar
@@ -446,26 +356,19 @@
     if(S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
     return false;
   }
-  function toggleWeekday(c, dow){
-    if(!c.weekdays) c.weekdays=[];
-    var k=c.weekdays.indexOf(dow);
-    if(k>=0) c.weekdays.splice(k,1); else c.weekdays.push(dow);
-    save(); render();
-  }
 
   // ---------- seed / state ----------
   var TODAY = new Date(); TODAY.setHours(0,0,0,0);
   function defaultChores(){
-    var monAnchor = ymd(startOfWeek(TODAY)); // a Monday for the quincenal anchor
     return [
-      {id:1, name:"Wash the dishes",     freq:"Daily",    assignee:0, icon:"🍽️", effort:2},
-      {id:2, name:"Water the plants",    freq:"Daily",    assignee:1, icon:"🌱", effort:1},
-      {id:3, name:"Take out the trash",  freq:"Weekly",   assignee:1, icon:"🗑️", weekdays:[1,4], effort:1},
-      {id:4, name:"Vacuum the living room",freq:"Weekly", assignee:0, icon:"🧹", weekdays:[6], effort:2},
-      {id:5, name:"Clean the bathroom",  freq:"Weekly",   assignee:0, icon:"🚿", weekdays:[0], effort:3},
-      {id:6, name:"Weekly groceries",    freq:"Weekly",   assignee:1, icon:"🛒", weekdays:[6], effort:3},
-      {id:7, name:"Change the sheets",   freq:"Biweekly", assignee:1, icon:"🛏️", startDate:monAnchor, effort:2},
-      {id:8, name:"Pay the bills",       freq:"Monthly",  assignee:0, icon:"💡", dayOfMonth:5, effort:1}
+      {id:1, name:"Wash the dishes",       freq:"Daily",    assignee:0, icon:"🍽️", effort:2},
+      {id:2, name:"Water the plants",      freq:"Daily",    assignee:1, icon:"🌱", effort:1},
+      {id:3, name:"Take out the trash",    freq:"Weekly",   assignee:1, icon:"🗑️", effort:1, timesPerWeek:2},
+      {id:4, name:"Vacuum the living room",freq:"Weekly",   assignee:0, icon:"🧹", effort:2},
+      {id:5, name:"Clean the bathroom",    freq:"Weekly",   assignee:0, icon:"🚿", effort:3},
+      {id:6, name:"Weekly groceries",      freq:"Weekly",   assignee:1, icon:"🛒", effort:3},
+      {id:7, name:"Change the sheets",     freq:"Biweekly", assignee:1, icon:"🛏️", effort:2},
+      {id:8, name:"Pay the bills",         freq:"Monthly",  assignee:0, icon:"💡", effort:1}
     ];
   }
 
@@ -726,28 +629,11 @@
     }
     pruneOldTombstones();
   }
-  // One-shot: replace the old week-granular plannedWeeks flag with per-occurrence
-  // tombstones. Idempotent — runs as long as S.plannedWeeks has entries; clears it
-  // afterwards. Triggered on startup and on every applyDoc (so a remote phone still
-  // on the old build can sync in and we'll convert).
+  // Drop the obsolete plannedWeeks shape on sight — pre-occurrences clients
+  // are well past their shelf life. No need to migrate to tombstones since
+  // there's no schedule to anchor them to anymore.
   function migratePlannedWeeksOnce(){
-    if(!S.plannedWeeks) return;
-    var keys = Object.keys(S.plannedWeeks);
-    if(keys.length === 0){ S.plannedWeeks = null; return; }
-    keys.forEach(function(wkYmd){
-      var sp = wkYmd.split("-");
-      var weekStart = new Date(+sp[0], (+sp[1])-1, +sp[2]);
-      var weekEnd = addDays(weekStart, 6);
-      S.chores.forEach(function(c){
-        for(var d = new Date(weekStart); d <= weekEnd; d = addDays(d, 1)){
-          if(!isDueDepth(c, d, 0)) continue;
-          var key = occKey(c.id, d);
-          if(S.occurrences[key]) continue;
-          S.occurrences[key] = { tombstone: true };
-        }
-      });
-    });
-    S.plannedWeeks = null;
+    if(S.plannedWeeks) S.plannedWeeks = null;
   }
 
   // Tombstones outside the rolling materialisation window do no work — sweep them
@@ -933,14 +819,10 @@
 
   // Seed a realistic-looking history for the current week so Logros/Mes look alive.
   function seedDoneLog(){
-    var log={}; var ch=defaultChores(); var wk=startOfWeek(TODAY);
-    for(var i=0;i<7;i++){
-      var day=addDays(wk,i); if(day>TODAY) break;
-      ch.forEach(function(c){
-        if(isDue(c,day) && Math.random()>0.35){ log[c.id+"_"+ymd(day)] = c.assignee; }
-      });
-    }
-    return log;
+    // Templates carry no schedule, so the legacy 'pre-fill some random past
+    // completions' seed has nothing to anchor against. Fresh installs start
+    // with a clean doneLog and let real completions populate it.
+    return {};
   }
 
   // ---------- per-occurrence helpers (Phase 2) ----------
@@ -1002,13 +884,7 @@
       }
     }
     save();
-    // The schedule kind decides whether to prompt for the next cycle date.
-    var afterAction = !wasUnmarking ? scheduleAfterDone(ch) : null;
-    if(afterAction && afterAction.kind === "pickNext"){
-      openWhenNext(ch, date);
-    } else {
-      render();
-    }
+    render();
   }
   // ---------- streak (Phase 4) ----------
   // A day counts toward a person's streak if they had >=1 occurrence assigned to them
@@ -1026,9 +902,8 @@
       var owed = 0, done = 0;
       for(var k = 0; k < S.chores.length; k++){
         var c = S.chores[k];
-        // Use template-level due-ness so the new showsOnDay window cap doesn't
-        // make distant-past days look "neutral" and inflate the streak.
-        if(!isDueDepth(c, d, 0)) continue;
+        // 'Due' is now occurrence-record-based — templates carry no schedule.
+        if(!isDue(c, d)) continue;
         if(occAssignee(c, d) !== personIdx) continue;
         owed++;
         if(isDone(c, d)) done++;
@@ -1368,29 +1243,16 @@
   // too. Templates, doneLog history, balances, rewards, badges, streaks, and
   // reminders are all untouched.
   function clearAllOccurrences(){
-    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you plan the week again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you plan again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    // With templates carrying no schedule, the old 'tombstone past natural-
+    // due dates' step is moot — a date is 'due' only if we placed an
+    // occurrence there in the first place. Just wipe the map.
     S.occurrences = {};
     S.scheduleClearedAt = new Date().toISOString();
-    S.suppressInitialMaterialisation = true;
     invalidateBadgeStats();
-    // Tombstone past natural-due dates within the materialisation window so
-    // last-week ghost cards disappear too. Dates beyond the window are already
-    // hidden by showsOnDay's cap. Skip dates with a real doneLog entry so
-    // completed history still renders.
-    var pastFloor = addDays(startOfWeek(TODAY), -7);
-    var keys = [];
-    S.chores.forEach(function(c){
-      for(var d = new Date(pastFloor); d < TODAY; d = addDays(d, 1)){
-        if(!isDue(c, d)) continue;
-        var k = occKey(c.id, d);
-        if(S.doneLog && (S.doneLog[k] === 0 || S.doneLog[k] === 1)) continue;
-        keys.push(k);
-      }
-    });
-    keys.forEach(function(k){ S.occurrences[k] = { tombstone: true }; });
     save();
     render();
-    alert("Done. The board is empty — head to the Tasks tab and tap 🔀 Plan this week whenever you're ready.");
+    alert("Done. The board is empty — head to the Tasks tab and tap 🔀 Plan whenever you're ready.");
   }
 
   // Called from save(); checks every badge predicate, records the unlock instant.
@@ -1523,10 +1385,9 @@
     return h("div",{class:"card"+(done?" done":"")}, children);
   }
 
-  // Drop this single (chore, date) from the schedule without marking it done. Writes
-  // a tombstone at the occurrence key so showsOnDay / isDueDepth hide the card and
-  // ensureOccurrences doesn't re-materialise it from the template's defaults.
-  // The template stays untouched — other days still fire.
+  // Drop this single (chore, date) without marking it done. Writes a
+  // tombstone at the occurrence key so showsOnDay hides the card. Other
+  // scheduled days for this chore stay put.
   function skipOccurrence(ch, date){
     if(!S.occurrences) S.occurrences = {};
     var key = occKey(ch.id, date);
@@ -2213,79 +2074,98 @@
     }
     return { weeks: weeks, mFirst: mFirst, mLast: mLast };
   }
-  // For a (chore, week) compute the aggregated assignee + state across every
-  // natural-due date in that week. "Mixed" surfaces when dates were edited
-  // individually in the Occurrence sheet to different people.
-  //
-  // Linked-after chores get their own row — they derive their natural-due
-  // dates from the parent + N days, but the assignee is independent (so you
-  // can wash on Mon · Nico and fold on Tue · Caro).
+  // For a (chore, week) build the row state from occurrence records only.
+  // Templates have no schedule, so the planner doesn't compute "natural-due
+  // dates" — it just shows what's been placed plus a 7-day picker for adding
+  // more. Per-day occurrences live in row.perDay[0..6].
   function planWeekInfo(c, weekStart){
-    var weekEnd = addDays(weekStart, 6);
-    var dates = [];
-    for(var d = new Date(weekStart); d <= weekEnd; d = addDays(d, 1)){
-      if(scheduleDue(c, d)) dates.push(new Date(d));
-    }
-    if(dates.length === 0) return null;
-    var seen = {};   // assignee key → count
-    var doneCount = 0, tombCount = 0, pendingDates = [];
-    dates.forEach(function(d){
+    var perDay = {};
+    var assignees = {};
+    var scheduledCount = 0, doneCount = 0;
+    for(var i = 0; i < 7; i++){
+      var d = addDays(weekStart, i);
       var o = S.occurrences[occKey(c.id, d)];
-      // Done dates are immutable from the Planner — they count toward
-      // doneCount and contribute to the displayed assignee, but tapping
-      // doesn't reassign them (use the Occurrence sheet to undo first).
-      if(o && o.done){
-        doneCount++;
-        seen[String(o.assignee)] = (seen[String(o.assignee)]||0) + 1;
-        return;
-      }
-      // Tombstoned dates (skipped previously, or wiped by Start fresh) ARE
-      // assignable from here — tapping a person rewrites them as a fresh
-      // pinned occurrence. The Planner is a re-planning surface, so the
-      // user expects "pick a person" to override prior decisions.
-      if(o && o.tombstone){ tombCount++; pendingDates.push(new Date(d)); return; }
-      var who = o ? o.assignee : "__unset";
-      seen[String(who)] = (seen[String(who)]||0) + 1;
-      pendingDates.push(new Date(d));
-    });
+      if(!o || o.tombstone) continue;
+      perDay[i] = o;
+      scheduledCount++;
+      if(o.done) doneCount++;
+      assignees[String(o.assignee)] = (assignees[String(o.assignee)]||0) + 1;
+    }
     var assignee = null, mixed = false;
-    var keys = Object.keys(seen);
+    var keys = Object.keys(assignees);
     if(keys.length === 1){
-      var k = keys[0];
-      if(k === "null" || k === "__unset") assignee = null;
-      else assignee = parseInt(k, 10);
+      assignee = keys[0] === "null" ? null : parseInt(keys[0], 10);
     } else if(keys.length > 1){
       mixed = true;
-      assignee = null;
     }
-    // No visual carry-forward across weeks — every week is independently
-    // assignable. The display only shows what's actually been picked for
-    // this week (Anyone until you tap one).
     return {
       chore: c,
       weekStart: new Date(weekStart),
-      dates: dates,
-      pendingDates: pendingDates,
-      pts: effortOf(c) * dates.length,
-      assignee: assignee,
-      committedAssignee: assignee,
-      mixed: mixed,
+      perDay: perDay,
+      scheduledCount: scheduledCount,
       doneCount: doneCount,
-      tombCount: tombCount,
+      pts: effortOf(c) * scheduledCount,
+      assignee: assignee,
+      mixed: mixed,
       fixed: !!c.pinned && (c.assignee === 0 || c.assignee === 1),
-      allDone: dates.length > 0 && doneCount === dates.length
+      allDone: scheduledCount > 0 && doneCount === scheduledCount
     };
   }
-  // Tap an assignee: write to every PENDING date (skip done / tombstoned).
-  // Pinned so showsOnDay surfaces it even with the tightened materialisation.
-  function planWeekSetAssignee(info, to){
-    if(info.fixed) return;
-    info.pendingDates.forEach(function(d){
-      var key = occKey(info.chore.id, d);
-      // Always overwrite — pendingDates can include tombstones, which need
-      // to be replaced by a fresh pinned occurrence so the chore actually
-      // surfaces on Today / Week / Month again.
-      S.occurrences[key] = { assignee: to, done: false, doneAt: null, pinned: true };
+  // Cascade after-chores when the parent gets a planner occurrence added or
+  // removed. Children's day = parent's day + linkedAfter.days; assignee
+  // defaults to the child template's own assignee so wash-on-Mon · Nico
+  // pairs with fold-on-Tue · Caro out of the box, but it's independent.
+  function cascadeAddAfter(parentChoreId, parentDate){
+    S.chores.forEach(function(c){
+      if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
+      var d = addDays(parentDate, c.linkedAfter.days || 1);
+      var key = occKey(c.id, d);
+      var existing = S.occurrences[key];
+      if(existing && !existing.tombstone) return;
+      var who = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+      S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
+    });
+  }
+  function cascadeRemoveAfter(parentChoreId, parentDate){
+    S.chores.forEach(function(c){
+      if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
+      var d = addDays(parentDate, c.linkedAfter.days || 1);
+      var key = occKey(c.id, d);
+      var o = S.occurrences[key];
+      if(o && !o.done && !o.tombstone) delete S.occurrences[key];
+    });
+  }
+  // Toggle a single day on / off for this (chore, week) row. Tap to add,
+  // tap again to remove. Done occurrences refuse the tap — undo via the
+  // Occurrence sheet first. New occurrences inherit the row's current
+  // assignee, falling through to the chore template default.
+  function planWeekToggleDay(row, dayIdx){
+    var date = addDays(row.weekStart, dayIdx);
+    var key = occKey(row.chore.id, date);
+    var o = S.occurrences[key];
+    if(o && o.done){
+      alert("'"+row.chore.name+"' is already done on this day. Tap the card on Today / Week / Month and undo it first to re-plan.");
+      return;
+    }
+    if(o && !o.tombstone){
+      delete S.occurrences[key];
+      cascadeRemoveAfter(row.chore.id, date);
+    } else {
+      var who = (row.assignee === 0 || row.assignee === 1) ? row.assignee
+              : (row.chore.assignee === 0 || row.chore.assignee === 1) ? row.chore.assignee
+              : null;
+      S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
+      cascadeAddAfter(row.chore.id, date);
+    }
+    save(); render();
+  }
+  function planWeekSetAssignee(row, to){
+    if(row.fixed) return;
+    Object.keys(row.perDay).forEach(function(i){
+      var o = row.perDay[i];
+      if(o.done) return;
+      o.assignee = to;
+      o.pinned = true;
     });
     save(); render();
   }
@@ -2296,13 +2176,13 @@
       var perWeek = [0, 0], rows = [], weekTotal = 0;
       S.chores.forEach(function(c){
         var ri = planWeekInfo(c, weekStart);
-        if(!ri) return;
+        // Every chore gets a row in every week — empty rows are how the
+        // user adds new dates. Skip nothing.
         rows.push(ri);
-        var pts = effortOf(c) * (ri.dates.length - ri.tombCount);
-        weekTotal += pts;
+        weekTotal += ri.pts;
         if(ri.assignee === 0 || ri.assignee === 1){
-          perWeek[ri.assignee] += pts;
-          total[ri.assignee] += pts;
+          perWeek[ri.assignee] += ri.pts;
+          total[ri.assignee] += ri.pts;
         }
       });
       totalPts += weekTotal;
@@ -2368,31 +2248,57 @@
         wk.rows.forEach(function(r){
           var row = h("div",{style:"padding:10px 12px;border:1.5px solid var(--border);border-radius:12px;margin-bottom:8px;background:var(--input-bg);opacity:"+(r.allDone?"0.55":"1")+";"});
           var partial = r.doneCount > 0 && !r.allDone;
+          var afterChild = !!(r.chore.linkedAfter && r.chore.linkedAfter.taskId);
           row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
             h("span",{style:"font-size:20px;", text:r.chore.icon || "🧽"}),
             h("div",{style:"flex:1;min-width:0;"},
               h("div",{style:"font-weight:700;font-size:14px;", text:(r.fixed?"🔒 ":"") + r.chore.name}),
               h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;",
-                text: r.dates.length + "×" + effortOf(r.chore) + " pt"
-                    + (partial ? " · " + r.doneCount + "/" + r.dates.length + " done" : "")
+                text: scheduleLabel(r.chore) + " · " + effortOf(r.chore) + " pt each"
+                    + (r.scheduledCount > 0 ? " · " + r.scheduledCount + " scheduled" : "")
+                    + (partial ? " · " + r.doneCount + " done" : "")
                     + (r.allDone ? " · all done" : "")
                     + (r.mixed ? " · mixed" : "")})
             )
           ));
+          // Day picker — 7 buttons Mon-Sun for this week. Tap to add a day,
+          // tap an already-scheduled day to remove it. Done days refuse the
+          // tap (they explain via alert). After-chores are read-only — they
+          // auto-follow their parent.
+          var dayPick = h("div",{style:"display:flex;gap:4px;margin-bottom:8px;"});
+          for(var i = 0; i < 7; i++){
+            (function(){
+              var di = i;
+              var d = addDays(r.weekStart, di);
+              var o = r.perDay[di];
+              var done = !!(o && o.done);
+              var scheduled = !!o;
+              var dayBg = done ? "var(--soft-accent)" : scheduled ? "var(--accent1)" : "var(--surface)";
+              var dayFg = scheduled ? "#fff" : "var(--text)";
+              var dayBorder = scheduled ? "var(--accent1)" : "var(--border)";
+              var disabledDay = afterChild;
+              dayPick.appendChild(h("button",{
+                style:"flex:1;padding:6px 0;border:1.5px solid "+dayBorder+";border-radius:9px;background:"+dayBg+";color:"+dayFg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabledDay?"default":"pointer")+";opacity:"+(disabledDay?"0.55":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+                onClick: disabledDay
+                  ? function(){ alert("'"+r.chore.name+"' follows its parent — schedule the parent and this lands "+(r.chore.linkedAfter.days||1)+" day(s) later."); }
+                  : function(){ planWeekToggleDay(r, di); }
+              },
+                h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
+                h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
+              ));
+            })();
+          }
+          row.appendChild(dayPick);
           var personPick = h("div",{style:"display:flex;gap:6px;"});
           [null, 0, 1].forEach(function(p){
             var picked = (r.assignee === p) && !r.mixed;
             var label = p == null ? "Anyone" : S.names[p];
             var fixedBlock = r.fixed && p !== r.chore.assignee;
-            var disabled = r.allDone || fixedBlock;
+            var noScheduled = r.scheduledCount === 0;
+            var disabled = r.allDone || fixedBlock || noScheduled;
             var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
             var fg = picked ? "#fff" : "var(--text)";
             var border = picked ? bg : "var(--border)";
-            // Every disabled button surfaces an alert on tap rather than
-            // going silent — so it's obvious *why* the assignment isn't
-            // landing (locked chore vs. week already done). The fixed alert
-            // points at the Task editor; the done alert points at the
-            // Occurrence sheet where individual days can be un-marked.
             var onTap;
             if(fixedBlock){
               onTap = (function(ch){ return function(){
@@ -2400,13 +2306,15 @@
               }; })(r.chore);
             } else if(r.allDone){
               onTap = (function(ch){ return function(){
-                alert("'"+ch.name+"' is already done for this week. Tap the card on Today / Week / Month and undo it if you want to re-assign.");
+                alert("'"+ch.name+"' is already done this week. Undo via the Occurrence sheet to re-assign.");
               }; })(r.chore);
+            } else if(noScheduled){
+              onTap = function(){ alert("Tap a day above first, then pick who."); };
             } else {
               onTap = function(){ planWeekSetAssignee(r, p); };
             }
             personPick.appendChild(h("button",{
-              style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;opacity:"+(disabled?"0.45":"1")+";",
+              style:"flex:1;padding:7px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12px;cursor:pointer;opacity:"+(disabled?"0.45":"1")+";",
               onClick: onTap,
               text: label
             }));
@@ -2415,32 +2323,6 @@
           listEl.appendChild(row);
         });
       });
-    }
-    // Diagnostic footer: list every chore that produced zero rows this month,
-    // plus the schedule-kind + anchor we computed, so we can see exactly why
-    // it's being filtered. Helps the user verify their config AND catches
-    // the case where the planner silently drops a chore the user expected.
-    var shownChoreIds = {};
-    data.weeks.forEach(function(wk){
-      wk.rows.forEach(function(r){ shownChoreIds[String(r.chore.id)] = true; });
-    });
-    var hidden = [];
-    S.chores.forEach(function(c){
-      if(shownChoreIds[String(c.id)]) return;
-      var sch = getSchedule(c);
-      hidden.push({ chore: c, kind: sch.kind, anchor: sch.anchor || sch.dayOfMonth || (sch.days ? sch.days.join(",") : "—") });
-    });
-    if(hidden.length){
-      var hideBox = h("div",{style:"margin-top:14px;padding:10px 12px;border:1px dashed var(--border);border-radius:11px;background:var(--input-bg);"});
-      hideBox.appendChild(h("div",{style:"font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;",
-        text:"Not showing this month ("+hidden.length+")"}));
-      hidden.forEach(function(h_){
-        hideBox.appendChild(h("div",{style:"font-size:12px;color:var(--text);margin:3px 0;",
-          text: (h_.chore.icon||"·") + " " + h_.chore.name + "  ·  " + h_.kind + "  ·  " + h_.anchor }));
-      });
-      hideBox.appendChild(h("div",{style:"font-size:10.5px;color:var(--muted);margin-top:6px;",
-        text:"Reason: no natural-due dates in any week left in "+MONTHS[data.mFirst.getMonth()]+"."}));
-      listEl.appendChild(hideBox);
     }
     var closeBtn = h("button",{
       class:"btn primary",
@@ -2453,70 +2335,6 @@
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closePlanMonth(); } }}, sheet);
   }
 
-  // ---------- "When next?" picker for Biweekly / cycle-Monthly (Phase 6) ----------
-  var whenNextCtx = null;
-  function openWhenNext(ch, doneDate){
-    whenNextCtx = { chore: ch, doneDate: new Date(doneDate) };
-    S.modal = "whenNext"; render();
-  }
-  function closeWhenNext(){ whenNextCtx = null; S.modal = null; render(); }
-  function modalWhenNext(){
-    if(!whenNextCtx) return h("div");
-    var ch = whenNextCtx.chore;
-    var doneDate = whenNextCtx.doneDate;
-    var cycleDays = ch.freq === "Biweekly" ? 14 : 28;
-    var label = ch.freq === "Biweekly" ? "Next one in 2 weeks" : "Next one in 4 weeks";
-    var weekStart = startOfWeek(addDays(doneDate, cycleDays));
-    var defaultDay = addDays(doneDate, cycleDays);
-
-    function pick(date){
-      // Wipe future undone occurrences for this chore AND any chores linked after it
-      // (their schedule cascades through the parent, so moving the parent invalidates
-      // their existing materialised dates).
-      var todayKey = ymd(TODAY);
-      var ids = {}; ids[String(ch.id)] = true;
-      S.chores.forEach(function(c){
-        if(c.linkedAfter && String(c.linkedAfter.taskId) === String(ch.id)) ids[String(c.id)] = true;
-      });
-      Object.keys(S.occurrences).forEach(function(key){
-        var under = key.indexOf("_"); if(under < 0) return;
-        if(!ids[key.slice(0, under)]) return;
-        var dStr = key.slice(under + 1);
-        if(dStr <= todayKey) return;
-        if(!S.occurrences[key].done) delete S.occurrences[key];
-      });
-      ch.startDate = ymd(date);
-      if(ch.freq === "Monthly") delete ch.dayOfMonth;
-      save();
-      closeWhenNext();
-    }
-
-    var dayRow = h("div",{style:"display:flex;gap:6px;"});
-    for(var i = 0; i < 7; i++){
-      (function(){
-        var d = addDays(weekStart, i);
-        var isDefault = sameDay(d, defaultDay);
-        var btn = h("button",{
-          style:"flex:1;padding:9px 4px;border:1.5px solid "+(isDefault?"var(--accent1)":"var(--border)")+";border-radius:11px;background:"+(isDefault?"var(--soft-accent)":"var(--input-bg)")+";color:"+(isDefault?"var(--soft-accent-text)":"var(--text)")+";font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;",
-          onClick:function(){ pick(d); }
-        },
-          h("span",{style:"font-size:10.5px;color:var(--muted);font-weight:700;text-transform:uppercase;", text: DOW_SHORT[d.getDay()].slice(0,2)}),
-          h("span",{style:"font-size:17px;font-weight:800;", text: String(d.getDate())})
-        );
-        dayRow.appendChild(btn);
-      })();
-    }
-
-    var monthLine = MONTHS[weekStart.getMonth()] + (weekStart.getMonth() !== addDays(weekStart,6).getMonth() ? " – " + MONTHS[addDays(weekStart,6).getMonth()] : "") + " " + weekStart.getFullYear();
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeWhenNext(); } }},
-      h("div",{class:"modal", style:"padding:22px 18px 26px;"},
-        h("h3",{style:"margin:0 0 4px;font-size:18px;text-align:center;", text:label}),
-        h("div",{style:"color:var(--muted);font-size:12.5px;margin-bottom:4px;text-align:center;", text:"Pick which day for " + ch.name}),
-        h("div",{style:"color:var(--muted);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px;text-align:center;", text: monthLine}),
-        dayRow,
-        h("button",{class:"btn ghost", style:"width:100%;margin-top:16px;", onClick: closeWhenNext, text: "Skip — use default"})
-      ));
-  }
 
   // ---------- badge detail modal ----------
   var badgeView = null;
@@ -2672,15 +2490,15 @@
   var draft; var editingId=null; var draftOriginal=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], dayOfMonth:1, startDate:ymd(startOfWeek(TODAY)), effort:2, pinned:false, linkedAfter:null };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
   function openEdit(c){
     editingId=c.id;
     draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
-      weekdays:(c.weekdays?c.weekdays.slice():[]), dayOfMonth:c.dayOfMonth||1,
-      startDate:c.startDate||ymd(startOfWeek(TODAY)), effort:effortOf(c), pinned:!!c.pinned,
+      timesPerWeek: c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1,
+      effort:effortOf(c), pinned:!!c.pinned,
       linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
@@ -2694,14 +2512,16 @@
     if(!target){ target={ id:Date.now() }; S.chores.push(target); }
     var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
     target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
-    delete target.weekdays; delete target.startDate; delete target.dayOfMonth; delete target.linkedAfter;
+    // Templates store cadence only — no day/anchor. Whatever lingered from the
+    // old shape gets cleared on every save, so chore docs stay clean.
+    delete target.weekdays; delete target.startDate; delete target.dayOfMonth; delete target.linkedAfter; delete target.schedule;
     if(d.linkedAfter && d.linkedAfter.taskId && d.linkedAfter.taskId !== target.id){
-      // Linked: schedule is derived from parent — own freq/weekday/anchor fields are unused.
       target.linkedAfter = { taskId: d.linkedAfter.taskId, days: Math.max(1, d.linkedAfter.days || 1) };
+      delete target.timesPerWeek;
+    } else if(d.freq === "Weekly"){
+      target.timesPerWeek = Math.max(1, Math.min(7, d.timesPerWeek || 1));
     } else {
-      if(d.freq==="Weekly") target.weekdays=d.weekdays.length?d.weekdays.slice():[TODAY.getDay()];
-      if(d.freq==="Daily" && d.weekdays.length) target.weekdays=d.weekdays.slice();
-      if(d.freq==="Biweekly" || d.freq==="Monthly") target.startDate=d.startDate;
+      delete target.timesPerWeek;
     }
     // When you edit the template, propagate the new default assignee/lock to upcoming
     // non-done occurrences so the change is visible immediately. Past + done are left
@@ -2716,16 +2536,22 @@
   }
   function propagateTemplateChanges(c){
     if(!S.occurrences) return;
-    var to=addDays(TODAY,14);
-    for(var d=new Date(TODAY); d<=to; d=addDays(d,1)){
-      if(!isDue(c,d)) continue;
-      var o=S.occurrences[occKey(c.id, d)];
-      // Don't clobber occurrences the user has planned (Planning sheet / per-occurrence pin).
-      // Editing the template's default assignee shouldn't undo intent expressed on
-      // a specific date.
-      if(!o || o.done || o.pinned) continue;
+    // Walk every upcoming non-pinned, non-done occurrence for this chore in
+    // the next 2 weeks and refresh its assignee to the new template default.
+    // Pinned occurrences (anything you assigned in the planner) are intent
+    // expressed on a specific date — leave them alone.
+    var fromStr = ymd(TODAY);
+    var toStr = ymd(addDays(TODAY, 14));
+    var idStr = String(c.id);
+    Object.keys(S.occurrences).forEach(function(key){
+      var under = key.indexOf("_"); if(under < 0) return;
+      if(key.slice(0, under) !== idStr) return;
+      var dStr = key.slice(under + 1);
+      if(dStr < fromStr || dStr > toStr) return;
+      var o = S.occurrences[key];
+      if(!o || o.done || o.pinned || o.tombstone) return;
       o.assignee = c.assignee;
-    }
+    });
   }
   function closeAdd(){ editingId=null; draftOriginal=null; S.modal=null; render(); }
   function isDraftDirty(){ return draftOriginal!=null && JSON.stringify(draft)!==draftOriginal; }
@@ -2804,39 +2630,16 @@
       modalBody.push(field("Days after", daysIn));
     } else {
       modalBody.push(field("Frequency", freqSeg));
-      if(d.freq==="Weekly" || d.freq==="Daily"){
-        var dp=h("div",{class:"daypick"});
-        MON_FIRST.forEach(function(dow){
-          dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
-            onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:DOW_SHORT[dow]}));
+      if(d.freq==="Weekly"){
+        // Times per week — 1, 2, 3. Default 1. Schedule (which days) lives
+        // in the Planning sheet now; the template just declares how often.
+        var countSeg=h("div",{class:"seg"});
+        [1,2,3].forEach(function(n){
+          countSeg.appendChild(h("button",{class:(d.timesPerWeek===n?"on":""),
+            onClick:function(){ d.timesPerWeek=n; render(); },
+            text: n + "× / week"}));
         });
-        modalBody.push(field(d.freq==="Daily"?"Days (leave empty = every day)":"Days", dp));
-      }
-      if(d.freq==="Biweekly" || d.freq==="Monthly"){
-        var bdp=h("div",{class:"daypick"});
-        var selW=weekdayOfYMD(d.startDate);
-        MON_FIRST.forEach(function(dow){
-          bdp.appendChild(h("button",{class:(selW===dow?"on":""),
-            onClick:function(){ d.startDate=weekdayInThisWeekYMD(dow); render(); }, text:DOW_SHORT[dow]}));
-        });
-        modalBody.push(field(d.freq==="Biweekly"?"Every 2 weeks on":"Every 4 weeks on", bdp));
-        // Re-anchor: if the stored anchor sits in a different week from
-        // today's, surface a one-tap reset so existing chores with stale
-        // (or far-future) anchors can be fixed without re-tapping the
-        // weekday. Common after editing across phone-clock changes.
-        var anchorWeekStart = startOfWeek((function(){
-          var sp = String(d.startDate||"").split("-");
-          return new Date(+sp[0], (+sp[1])-1, +sp[2]);
-        })());
-        var todayWeekStart = startOfWeek(TODAY);
-        if(d.startDate && !sameDay(anchorWeekStart, todayWeekStart)){
-          var reAnchorBtn = h("button",{
-            style:"width:100%;margin-top:8px;padding:10px;border:1.5px dashed var(--accent2);border-radius:11px;background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
-            onClick:function(){ d.startDate=weekdayInThisWeekYMD(selW); render(); },
-            text:"↺ Re-anchor to this week ("+DOW_SHORT[selW]+" "+addDays(todayWeekStart, (selW+6)%7).getDate()+")"
-          });
-          modalBody.push(reAnchorBtn);
-        }
+        modalBody.push(field("How many times a week", countSeg));
       }
     }
     modalBody.push(field("Difficulty", diffSeg));
@@ -2853,9 +2656,8 @@
         var usages = [];
         for(var dU = new Date(weekStart); dU <= weekEnd; dU = addDays(dU, 1)){
           var oU = S.occurrences[occKey(existing.id, dU)];
-          if(oU && oU.tombstone) continue;
-          if(!oU && !scheduleDue(existing, dU)) continue;
-          usages.push({ date: new Date(dU), occ: oU || null });
+          if(!oU || oU.tombstone) continue;
+          usages.push({ date: new Date(dU), occ: oU });
         }
         if(usages.length){
           var usageList = h("div",{style:"display:flex;flex-direction:column;gap:6px;"});
@@ -3207,16 +3009,6 @@
       h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
         h("span",{text:"📆"}), h("span",{text:scheduleLabel(c)}))
     );
-    // Quick day-chips: tap to set the day(s) right here, no need to open edit.
-    if(usesWeekdays(c)){
-      var strip=h("div",{class:"daypick", style:"margin-top:8px;"});
-      MON_FIRST.forEach(function(dow){
-        var on=(c.weekdays||[]).indexOf(dow)>=0;
-        strip.appendChild(h("button",{class:(on?"on":""), style:"padding:6px 0;font-size:10.5px;",
-          onClick:function(e){ e.stopPropagation(); toggleWeekday(c,dow); }, text:DOW_SHORT[dow][0]}));
-      });
-      main.appendChild(strip);
-    }
     return h("div",{class:"card", style:"cursor:pointer;align-items:flex-start;", onClick:function(){ openEdit(c); }},
       h("div",{class:"card-icon", text:c.icon}),
       main,
@@ -3381,7 +3173,6 @@
     if(S.modal==="catPopup") root.appendChild(modalCatPopup());
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
-    if(S.modal==="whenNext") root.appendChild(modalWhenNext());
     if(S.modal==="occurrence") root.appendChild(modalOccurrence());
     if(S.modal==="planMonth") root.appendChild(modalPlanMonth());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
