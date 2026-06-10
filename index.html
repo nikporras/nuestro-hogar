@@ -410,6 +410,15 @@
   // they're assigned in the Planning sheet — that's intentional.
   function showsOnDay(c, d){
     if(typeof S === "undefined") return false;
+    // Holiday mode hides every future card so the daily flow goes quiet.
+    // Past dates with completion history still surface (the receipt is
+    // independent of "are we currently on holiday?").
+    if(S.holidayMode && d >= TODAY){
+      if(S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, c.id+"_"+ymd(d))) return true;
+      var oH = S.occurrences && S.occurrences[occKey(c.id, d)];
+      if(oH && oH.done) return true;
+      return false;
+    }
     if(S.occurrences){
       var o = S.occurrences[occKey(c.id, d)];
       if(o && o.tombstone) return false;
@@ -459,6 +468,7 @@
     suppressInitialMaterialisation: load("nh_suppressInitialMaterialisation", false),
     rumMilestonesHit: load("nh_rumMilestonesHit", { "0": [], "1": [] }),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
+    holidayMode: load("nh_holidayMode", false),
     balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
@@ -503,6 +513,7 @@
     localStorage.setItem("nh_suppressInitialMaterialisation", JSON.stringify(!!S.suppressInitialMaterialisation));
     localStorage.setItem("nh_rumMilestonesHit", JSON.stringify(S.rumMilestonesHit || { "0": [], "1": [] }));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
+    localStorage.setItem("nh_holidayMode", JSON.stringify(!!S.holidayMode));
     if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
   function save(){
@@ -809,7 +820,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation, rumMilestonesHit:S.rumMilestonesHit }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation, holidayMode:!!S.holidayMode, rumMilestonesHit:S.rumMilestonesHit }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -831,6 +842,7 @@
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
     if(typeof d.suppressInitialMaterialisation==="boolean") S.suppressInitialMaterialisation=d.suppressInitialMaterialisation;
+    if(typeof d.holidayMode==="boolean") S.holidayMode=d.holidayMode;
     if(d.rumMilestonesHit && typeof d.rumMilestonesHit==="object") S.rumMilestonesHit=d.rumMilestonesHit;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
@@ -1716,26 +1728,39 @@
     var date=addDays(TODAY, S.dayOffset||0);
     var list=choresForDay(date);
     var wrap=h("div",{class:"content"});
-    // Small planning cue — only on real Today, and only if any non-skipped row
-    // in this week still needs a person. Tasks tab has the bigger 🔀 chip;
-    // this is just a hint so you know the Planning sheet exists.
+    // On Today only: either the holiday banner (when paused) or a small
+    // planning cue. Holiday wins — there's nothing to plan when the household
+    // is on pause.
     if((S.dayOffset||0) === 0){
-      var pendingCount = 0;
-      var planRows = buildPlanRows(planWeekStart(0));
-      for(var pri=0; pri<planRows.length; pri++){
-        var pr = planRows[pri];
-        if(pr.skipped || pr.done) continue;
-        if(pr.assignee === 0 || pr.assignee === 1) continue;
-        pendingCount++;
-      }
-      if(pendingCount > 0){
+      if(S.holidayMode){
         wrap.appendChild(h("div",{
-          style:"background:var(--soft-accent);color:var(--soft-accent-text);padding:9px 12px;border-radius:11px;margin-bottom:12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:700;",
-          onClick: function(){ openPlanWeek(0); }
+          style:"background:linear-gradient(135deg,#f6c453,#f29f4d);color:#3a2a10;padding:12px 14px;border-radius:13px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;",
+          onClick: function(){ S.modal = "names"; render(); }
         },
-          h("span",{text: "🔀 " + pendingCount + " chore" + (pendingCount===1?"":"s") + " need a person · tap to plan"}),
-          h("span",{style:"font-size:16px;font-weight:800;", text:"›"})
+          h("div",{style:"min-width:0;"},
+            h("div",{style:"font-weight:800;font-size:14px;", text:"🏖️ Holiday mode is on"}),
+            h("div",{style:"font-size:11.5px;opacity:0.85;margin-top:2px;", text:"Nothing's scheduled. Tap to resume."})
+          ),
+          h("span",{style:"font-size:18px;font-weight:800;", text:"›"})
         ));
+      } else {
+        var pendingCount = 0;
+        var planRows = buildPlanRows(planWeekStart(0));
+        for(var pri=0; pri<planRows.length; pri++){
+          var pr = planRows[pri];
+          if(pr.skipped || pr.done) continue;
+          if(pr.assignee === 0 || pr.assignee === 1) continue;
+          pendingCount++;
+        }
+        if(pendingCount > 0){
+          wrap.appendChild(h("div",{
+            style:"background:var(--soft-accent);color:var(--soft-accent-text);padding:9px 12px;border-radius:11px;margin-bottom:12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:700;",
+            onClick: function(){ openPlanWeek(0); }
+          },
+            h("span",{text: "🔀 " + pendingCount + " chore" + (pendingCount===1?"":"s") + " need a person · tap to plan"}),
+            h("span",{style:"font-size:16px;font-weight:800;", text:"›"})
+          ));
+        }
       }
     }
     // Reminders are a todo list, not date-specific — show them on Today only.
@@ -2857,6 +2882,25 @@
         }})
       )
     ];
+
+    // Holiday mode — global pause: hides every upcoming chore card on
+    // Today / Week / Month so the household goes quiet without losing the
+    // plan. Toggle to resume.
+    var holidayOn = !!S.holidayMode;
+    var holidayBtn = h("button",{
+      style:"width:100%;padding:12px;border:1.5px solid "+(holidayOn?"#f29f4d":"var(--border)")+";border-radius:11px;background:"+(holidayOn?"linear-gradient(135deg,#f6c453,#f29f4d)":"var(--input-bg)")+";color:"+(holidayOn?"#3a2a10":"var(--text)")+";font:inherit;font-weight:800;cursor:pointer;",
+      onClick: function(){
+        S.holidayMode = !S.holidayMode;
+        save(); render();
+      },
+      text: holidayOn ? "🏖️ Holiday mode on — tap to resume" : "🏖️ Go on holiday (pause everything)"
+    });
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Holiday"}),
+      holidayBtn,
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"Hides every future chore card across Today / Week / Month. Streaks pause; reminders still fire. Resume any time."})
+    );
 
     // Notifications — available on every device (each phone grants its own).
     var ns=notifStatus();
