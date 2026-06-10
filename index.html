@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v98";
+  var APP_VERSION = "v99";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2372,14 +2372,25 @@
             var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
             var fg = picked ? "#fff" : "var(--text)";
             var border = picked ? bg : "var(--border)";
-            // Locked rows surface an alert on tap rather than going silent —
-            // discoverable so the user knows to open the Task editor to unfix.
-            // allDone rows stay completely inert (no message to show).
-            var onTap = disabled
-              ? (fixedBlock ? (function(ch){ return function(){ alert("'"+ch.name+"' is locked to "+S.names[ch.assignee]+". Open the task and turn off Fixed assignee to plan it per week."); }; })(r.chore) : null)
-              : function(){ planWeekSetAssignee(r, p); };
+            // Every disabled button surfaces an alert on tap rather than
+            // going silent — so it's obvious *why* the assignment isn't
+            // landing (locked chore vs. week already done). The fixed alert
+            // points at the Task editor; the done alert points at the
+            // Occurrence sheet where individual days can be un-marked.
+            var onTap;
+            if(fixedBlock){
+              onTap = (function(ch){ return function(){
+                alert("'"+ch.name+"' is locked to "+S.names[ch.assignee]+". Open the task and turn off Fixed assignee to plan it per week.");
+              }; })(r.chore);
+            } else if(r.allDone){
+              onTap = (function(ch){ return function(){
+                alert("'"+ch.name+"' is already done for this week. Tap the card on Today / Week / Month and undo it if you want to re-assign.");
+              }; })(r.chore);
+            } else {
+              onTap = function(){ planWeekSetAssignee(r, p); };
+            }
             personPick.appendChild(h("button",{
-              style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:"+(disabled?(fixedBlock?"pointer":"default"):"pointer")+";opacity:"+(disabled?"0.4":"1")+";",
+              style:"flex:1;padding:8px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;opacity:"+(disabled?"0.45":"1")+";",
               onClick: onTap,
               text: label
             }));
