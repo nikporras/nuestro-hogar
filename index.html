@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v92";
+  var APP_VERSION = "v93";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1309,7 +1309,6 @@
     S.rumMilestonesHit = { "0": [], "1": [] };
     invalidateBadgeStats(); // baseline moved → rebuild from scratch
     save();
-    S.modal = null;
     render();
     alert("Done. Badges reset.");
   }
@@ -1340,7 +1339,6 @@
     S.rumMilestonesHit = { "0": [], "1": [] };
     invalidateBadgeStats();
     save();
-    S.modal = null;
     render();
     alert("Done. Progress wiped — chores are still there, ready to earn from scratch.");
   }
@@ -1375,7 +1373,6 @@
     });
     keys.forEach(function(k){ S.occurrences[k] = { tombstone: true }; });
     save();
-    S.modal = null;
     render();
     alert("Done. The board is empty — head to the Tasks tab and tap 🔀 Plan this week whenever you're ready.");
   }
