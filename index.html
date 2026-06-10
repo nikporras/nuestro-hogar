@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v93";
+  var APP_VERSION = "v94";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2197,25 +2197,15 @@
     }
     return { weeks: weeks, mFirst: mFirst, mLast: mLast };
   }
-  // Carry-forward default: walk back up to 4 weeks for an explicit owner of
-  // the same chore. Falls through to the template default, then null. This
-  // is what makes "Plan next month" feel like keeping the rhythm rather
-  // than starting from scratch.
-  function carryForwardAssignee(c, currentDate){
-    for(var i = 1; i <= 4; i++){
-      var prior = addDays(currentDate, -7 * i);
-      var o = S.occurrences[occKey(c.id, prior)];
-      if(o && !o.tombstone && (o.assignee === 0 || o.assignee === 1)) return o.assignee;
-    }
-    return (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
-  }
   // For a (chore, week) compute the aggregated assignee + state across every
   // natural-due date in that week. "Mixed" surfaces when dates were edited
   // individually in the Occurrence sheet to different people.
+  //
+  // Linked-after chores get their own row — they derive their natural-due
+  // dates from the parent + N days, but the assignee is independent (so you
+  // can wash on Mon · Nico and fold on Tue · Caro).
   function planWeekInfo(c, weekStart){
     var weekEnd = addDays(weekStart, 6);
-    var sch = getSchedule(c);
-    if(sch.kind === "after") return null;
     var dates = [];
     for(var d = new Date(weekStart); d <= weekEnd; d = addDays(d, 1)){
       if(scheduleDue(c, d)) dates.push(new Date(d));
@@ -2245,19 +2235,16 @@
       mixed = true;
       assignee = null;
     }
-    // Default for an entirely-unset row → carry-forward from a prior week.
-    var displayAssignee = assignee;
-    if(!mixed && assignee == null && doneCount === 0 && tombCount === 0){
-      var carry = carryForwardAssignee(c, dates[0]);
-      if(carry === 0 || carry === 1) displayAssignee = carry;
-    }
+    // No visual carry-forward across weeks — every week is independently
+    // assignable. The display only shows what's actually been picked for
+    // this week (Anyone until you tap one).
     return {
       chore: c,
       weekStart: new Date(weekStart),
       dates: dates,
       pendingDates: pendingDates,
       pts: effortOf(c) * dates.length,
-      assignee: displayAssignee,
+      assignee: assignee,
       committedAssignee: assignee,
       mixed: mixed,
       doneCount: doneCount,
