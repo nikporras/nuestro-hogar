@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v95";
+  var APP_VERSION = "v96";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2841,7 +2841,7 @@
       S.modal = null; render();
     }
 
-    var children=[ h("h3",{text:"Settings"}),
+    var children=[
       field("Person 1", in0),
       field("Person 2", in1),
       field("This phone is used by", deviceSeg)
@@ -2934,8 +2934,13 @@
     children.push(h("div",{class:"modal-actions", style:"margin-top:14px;"},
       h("button",{class:"btn primary", style:"width:100%;", text:"Close", onClick: commitAndClose})
     ));
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ commitAndClose(); } }},
-      h("div",{class:"modal"}, children));
+    var topBar = h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{style:"margin:0;text-align:center;", text:"Settings"})
+    );
+    var sheet = h("div",{class:"modal tall"}, topBar, h("div",{class:"modal-scroll"}, children));
+    attachSwipeClose(topBar, sheet, commitAndClose);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ commitAndClose(); } }}, sheet);
   }
 
   // ---------- calendar (.ics) export ----------
@@ -3204,32 +3209,42 @@
 
   // Floating top-right HUD: the device user's streak + Purr balance. Stays fixed
   // through scrolling, taps jump straight to the Stats tab where the source lives.
-  // Manual pull, for when the 10s background poll feels slow (other phone
-  // just marked something done and you want to see it now). syncingAt is
-  // device-local — it drives a brief visual on the refresh chip so the tap
-  // feels responsive even when nothing's changed remotely.
-  var syncingAt = 0;
-  function manualPull(){
-    if(!isAuthed()) return;
-    syncingAt = Date.now();
-    pullState();
-    render();
-    setTimeout(function(){
-      if(Date.now() - syncingAt >= 700){ syncingAt = 0; render(); }
-    }, 800);
+  // Force-update the app bundle: unregister the SW, clear every cache, and
+  // reload. Same end state as 'swipe out of recents and reopen', but as a
+  // one-tap chip so you don't have to babysit the PWA cache to see a new
+  // version. Live data lives in Supabase / localStorage, so reloading
+  // mid-session is safe.
+  var updatingAt = 0;
+  function forceAppUpdate(){
+    updatingAt = Date.now(); render();
+    var done = function(){ location.reload(); };
+    Promise.resolve()
+      .then(function(){
+        if(!("serviceWorker" in navigator)) return;
+        return navigator.serviceWorker.getRegistrations().then(function(regs){
+          return Promise.all(regs.map(function(r){ return r.unregister(); }));
+        });
+      })
+      .then(function(){
+        if(!("caches" in window)) return;
+        return caches.keys().then(function(names){
+          return Promise.all(names.map(function(n){ return caches.delete(n); }));
+        });
+      })
+      .then(done, done);
   }
   function topHud(){
     var p = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
     var streak = computeStreak(p);
     var bal = S.balances && (S.balances[p] != null) ? S.balances[p] : 0;
-    var syncing = syncingAt && (Date.now() - syncingAt < 800);
+    var updating = !!updatingAt;
     var wrap = h("div",{class:"topbar", style:"gap:6px;"});
     var refreshBtn = h("button",{
       class:"topchip",
-      style:"padding:6px 10px;font-size:15px;font-weight:800;"+(syncing?"opacity:0.55;":""),
-      title:"Pull latest from the cloud",
-      onClick: manualPull,
-      text: syncing ? "…" : "↻"
+      style:"padding:6px 10px;font-size:15px;font-weight:800;"+(updating?"opacity:0.55;":""),
+      title:"Update the app — pulls the latest build and reloads",
+      onClick: forceAppUpdate,
+      text: updating ? "…" : "↻"
     });
     var chip = h("button",{class:"topchip", onClick:function(){ S.tab="logros"; render(); }},
       h("img",{src:"./icons/streak.png", alt:"streak", style:"width:18px;height:18px;"}),
