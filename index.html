@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v111";
+  var APP_VERSION = "v112";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1646,24 +1646,35 @@
         text: (p == null ? "Anyone" : S.names[p])
       }));
     });
+    // 14-day picker: this week + next week. Move-day lets you push any
+    // occurrence forward or backward across the week boundary without
+    // having to open the planner.
     var wkStart = startOfWeek(date);
-    var dayPick = h("div",{style:"display:flex;gap:4px;"});
-    for(var i=0;i<7;i++){
-      (function(){
-        var d = addDays(wkStart, i);
-        var picked = sameDay(d, date);
-        var disabled = done;
-        var bg = picked ? "var(--accent1)" : "var(--surface)";
-        var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
-        dayPick.appendChild(h("button",{
-          style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
-          onClick: disabled ? null : function(){ moveOccurrence(ch, date, d); }
-        },
-          h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
-          h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
-        ));
-      })();
-    }
+    var dayPick = h("div",{style:"display:flex;flex-direction:column;gap:6px;"});
+    [0, 1].forEach(function(weekIdx){
+      var row = h("div",{style:"display:flex;gap:4px;"});
+      var rowStart = addDays(wkStart, weekIdx * 7);
+      var rowLabel = h("div",{style:"font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;padding:0 2px;margin-bottom:-2px;",
+        text: weekIdx === 0 ? "This week" : "Next week"});
+      var wrapEl = h("div",{}, rowLabel, row);
+      for(var i = 0; i < 7; i++){
+        (function(){
+          var d = addDays(rowStart, i);
+          var picked = sameDay(d, date);
+          var disabled = done;
+          var bg = picked ? "var(--accent1)" : "var(--surface)";
+          var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
+          row.appendChild(h("button",{
+            style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+            onClick: disabled ? null : function(){ moveOccurrence(ch, date, d); }
+          },
+            h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
+            h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
+          ));
+        })();
+      }
+      dayPick.appendChild(wrapEl);
+    });
     var skipBtn = h("button",{
       style:"width:100%;padding:11px;border:1.5px solid var(--danger);background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;font-size:13px;border-radius:11px;cursor:pointer;margin-top:14px;",
       onClick:function(){
@@ -1681,7 +1692,7 @@
     var bodyChildren = [
       doneBtn,
       field("Assignee" + (fixed ? " · fixed" : ""), assignSeg),
-      field("Move day", dayPick)
+      field("Move day · this week or next", dayPick)
     ];
     // Template notes — surface here so whoever's doing the chore today can
     // see "use the green sponge" without having to dig into the editor.
