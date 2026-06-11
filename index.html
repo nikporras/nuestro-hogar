@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v108";
+  var APP_VERSION = "v109";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -932,9 +932,42 @@
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
         checkRumMilestones(o.assignee);
       }
+      scheduleNextAfterCompletion(ch, date);
     }
     save();
     render();
+  }
+  // After-completion recurrence: when a chore set to mode 'afterCompletion'
+  // is marked done, schedule its next instance N days from TODAY (not from
+  // the date the user marked done for). For biweekly/monthly that retires
+  // the anchor concept — the cycle walks forward with you. Calendar-mode
+  // chores stay as-is: the planner places them, end of story.
+  function scheduleNextAfterCompletion(ch, doneDate){
+    if(ch.recurrenceMode !== "afterCompletion") return;
+    var n = 0;
+    switch(ch.freq){
+      case "Biweekly": n = 14; break;
+      case "Monthly":  n = ch.afterCompletionDays || 28; break;
+      case "Weekly":   n = 7; break;
+      case "Daily":    n = 1; break;
+      default: return;
+    }
+    if(n <= 0) return;
+    // Next instance dates from TODAY (the moment of action), bounded so a
+    // late completion doesn't push the next one further out than it would
+    // have been on a calendar plan. Cap: never less than N from the date
+    // the chore was supposed to be done.
+    var nextFromToday = addDays(TODAY, n);
+    var nextFromOrig  = addDays(doneDate, n);
+    var nextDate      = nextFromToday > nextFromOrig ? nextFromToday : nextFromOrig;
+    var key = occKey(ch.id, nextDate);
+    var existing = S.occurrences[key];
+    if(existing && !existing.tombstone) return; // don't double up
+    var who = (ch.rotate && (ch.assignee === 0 || ch.assignee === 1))
+      ? (1 - ch.assignee) // rotate hands off the swap (see auto-rotate feature)
+      : (ch.assignee === 0 || ch.assignee === 1) ? ch.assignee : null;
+    S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
+    cascadeAddAfter(ch.id, nextDate);
   }
   // ---------- streak (Phase 4) ----------
   // A day counts toward a person's streak if they had >=1 occurrence assigned to them
@@ -2593,7 +2626,7 @@
   var draft; var editingId=null; var draftOriginal=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null, notes:"" };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null, notes:"", recurrenceMode:"afterCompletion" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2603,7 +2636,8 @@
       timesPerWeek: c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1,
       effort:effortOf(c), pinned:!!c.pinned,
       linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null,
-      notes: c.notes || "" };
+      notes: c.notes || "",
+      recurrenceMode: c.recurrenceMode || ((c.freq === "Biweekly" || c.freq === "Monthly") ? "afterCompletion" : "calendar") };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2618,6 +2652,11 @@
     target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
     var notes = (d.notes || "").trim();
     if(notes) target.notes = notes; else delete target.notes;
+    if(d.freq === "Biweekly" || d.freq === "Monthly"){
+      target.recurrenceMode = d.recurrenceMode || "afterCompletion";
+    } else {
+      delete target.recurrenceMode;
+    }
     // Templates store cadence only — no day/anchor. Whatever lingered from the
     // old shape gets cleared on every save, so chore docs stay clean.
     delete target.weekdays; delete target.startDate; delete target.dayOfMonth; delete target.linkedAfter; delete target.schedule;
@@ -2752,6 +2791,26 @@
             text: n + "× / week"}));
         });
         modalBody.push(field("How many times a week", countSeg));
+      }
+      // Recurrence mode — only relevant for cycle-style cadences. 'After
+      // completion' walks the cycle forward from when you actually marked
+      // it done; 'On a schedule' is the existing planner-places-it model.
+      // Daily/Weekly default to calendar; Biweekly/Monthly default to
+      // after-completion (the whole reason the toggle exists).
+      if(d.freq === "Biweekly" || d.freq === "Monthly"){
+        var modeSeg=h("div",{class:"seg"});
+        var currentMode = d.recurrenceMode || "afterCompletion";
+        [["afterCompletion","After I mark done"],["calendar","On a fixed cycle"]].forEach(function(pair){
+          modeSeg.appendChild(h("button",{class:(currentMode===pair[0]?"on":""),
+            onClick:function(){ d.recurrenceMode=pair[0]; render(); },
+            text: pair[1]}));
+        });
+        modalBody.push(field("Repeat", modeSeg));
+        if(currentMode === "afterCompletion"){
+          var n = d.freq === "Biweekly" ? 14 : (d.afterCompletionDays || 28);
+          modalBody.push(h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 4px 8px;line-height:1.4;",
+            text:"Marking it done schedules the next one " + n + " days later — keeps the rhythm walking with you instead of nagging a fixed calendar day."}));
+        }
       }
     }
     modalBody.push(field("Difficulty", diffSeg));
