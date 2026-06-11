@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v107";
+  var APP_VERSION = "v108";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1330,6 +1330,32 @@
       return true;
     });
   }
+  // Rollover list: past undone, non-tombstoned occurrences from the last
+  // 14 days. Sorted oldest-first so the most overdue surfaces at the top
+  // of the rollover section. Respects the person filter so a Caro-only
+  // view doesn't push Nico-assigned rolled chores at her.
+  function rolledOverItems(){
+    var out = [];
+    if(!S.occurrences) return out;
+    var byId = {};
+    S.chores.forEach(function(c){ byId[String(c.id)] = c; });
+    var todayStr = ymd(TODAY);
+    var floorStr = ymd(addDays(TODAY, -14));
+    Object.keys(S.occurrences).forEach(function(key){
+      var o = S.occurrences[key];
+      if(!o || o.tombstone || o.done) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var dStr = key.slice(dash + 1);
+      if(dStr >= todayStr || dStr < floorStr) return;
+      var ch = byId[key.slice(0, dash)];
+      if(!ch) return;
+      if(S.filterPerson !== null && o.assignee !== S.filterPerson) return;
+      var sp = dStr.split("-");
+      out.push({ chore: ch, date: new Date(+sp[0], (+sp[1])-1, +sp[2]) });
+    });
+    out.sort(function(a,b){ return a.date - b.date; });
+    return out;
+  }
 
   // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
   function isoFromLocal(s){ if(!s) return null; var dt=new Date(s); return isNaN(dt.getTime()) ? null : dt.toISOString(); }
@@ -1716,7 +1742,24 @@
       h("div",{class:"section-title", style:"margin:0;cursor:pointer;", text:label, onClick:function(){ if(S.dayOffset!==0){ S.dayOffset=0; render(); } }}),
       navBtn("›", function(){ S.dayOffset++; render(); })
     ));
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "No tasks")); }
+    // Rollover: past undone occurrences from the last 14 days surface in
+    // Today's list until handled. Holds the user to account without
+    // notifications — the trash just keeps appearing until it gets taken.
+    // Only on real Today (not when scrubbing other days).
+    var rollovers = (S.dayOffset||0) === 0 && !S.holidayMode ? rolledOverItems() : [];
+    if(rollovers.length){
+      wrap.appendChild(h("div",{class:"section-title", style:"margin-top:4px;color:var(--accent2);", text:"↪ Rolled over (" + rollovers.length + ")"}));
+      rollovers.forEach(function(item){
+        var card = choreCard(item.chore, item.date);
+        // Visual tag prepended into the card so the source date is obvious.
+        var fromTag = h("div",{style:"font-size:10.5px;font-weight:800;color:var(--accent2);text-transform:uppercase;letter-spacing:0.08em;margin:-2px 0 6px;", text:"↪ from " + DOW_SHORT[item.date.getDay()] + " " + item.date.getDate() + " " + MONTHS[item.date.getMonth()].slice(0,3)});
+        card.insertBefore(fromTag, card.firstChild);
+        wrap.appendChild(card);
+      });
+      wrap.appendChild(h("div",{class:"section-title", style:"margin-top:14px;", text:"Today"}));
+    }
+    if(list.length===0 && rollovers.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"🎉"}), "No tasks")); }
+    else if(list.length===0){ wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:8px 0;", text:"Nothing fresh today — just the rollovers above."})); }
     else list.forEach(function(c){ wrap.appendChild(choreCard(c,date)); });
     return wrap;
   }
