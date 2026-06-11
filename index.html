@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v110";
+  var APP_VERSION = "v111";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1460,12 +1460,61 @@
   }
 
   // ---------- components ----------
+  // Most recent done date for this chore, anywhere in S.occurrences. Returns
+  // null if it's never been completed. Used by staleness coloring + the
+  // rotate helper. Walks the map once — cheap for typical sizes.
+  function lastDoneDate(c){
+    if(!S.occurrences) return null;
+    var idStr = String(c.id);
+    var latest = null;
+    Object.keys(S.occurrences).forEach(function(key){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var o = S.occurrences[key];
+      if(!o || !o.done) return;
+      var dStr = key.slice(dash + 1);
+      if(!latest || dStr > latest) latest = dStr;
+    });
+    if(!latest) return null;
+    var sp = latest.split("-");
+    return new Date(+sp[0], (+sp[1])-1, +sp[2]);
+  }
+  // Expected cadence interval in days — what 'on time' looks like for this
+  // chore. Drives the staleness color on undone cards.
+  function expectedIntervalDays(c){
+    switch(c.freq){
+      case "Daily":    return 1;
+      case "Weekly":   var n = c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1;
+                       return Math.max(1, Math.round(7 / n));
+      case "Biweekly": return 14;
+      case "Monthly":  return c.afterCompletionDays || 30;
+    }
+    return 7;
+  }
+  // Soft tint a card's left border based on how overdue it is. Fresh =
+  // gentle green, due-ish = amber, very overdue = red. No tint when there's
+  // no completion history yet (new chore, can't be 'late' for the first
+  // time). Done cards stay neutral — they already say everything visually.
+  function stalenessBorderColor(c){
+    var last = lastDoneDate(c);
+    if(!last) return null;
+    var interval = expectedIntervalDays(c);
+    var days = Math.max(0, daysBetween(last, TODAY));
+    var ratio = days / interval;
+    if(ratio < 0.8)  return "#56c596"; // fresh — soft green
+    if(ratio < 1.2)  return null;       // on-time — no tint
+    if(ratio < 1.8)  return "#f1c452"; // due-ish — amber
+    if(ratio < 2.6)  return "#ed8b3a"; // overdue — orange
+    return "#e55353";                    // way overdue — red
+  }
   function choreCard(ch, date){
     var done = isDone(ch, date);
     var eff  = effortOf(ch);
     var who  = occAssignee(ch, date);
     var lock = occPinned(ch, date);
     var openSheet = function(){ openOccurrence(ch, date); };
+    // Staleness tint only on undone cards — done is already a visual story.
+    var stale = done ? null : stalenessBorderColor(ch);
     var children = [
       h("div",{class:"check"+(done?" on":""), onClick:function(e){ e.stopPropagation(); toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:openSheet}),
@@ -1491,7 +1540,9 @@
         text:"×"
       }));
     }
-    return h("div",{class:"card"+(done?" done":"")}, children);
+    var cardEl = h("div",{class:"card"+(done?" done":"")}, children);
+    if(stale) cardEl.style.borderLeft = "4px solid " + stale;
+    return cardEl;
   }
 
   // Drop this single (chore, date) without marking it done. Writes a
