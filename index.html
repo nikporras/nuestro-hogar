@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v106";
+  var APP_VERSION = "v107";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1568,13 +1568,21 @@
       onClick: function(){ occSheetCtx = null; openEdit(ch); },
       text: "Edit the task →"
     });
-    var body = h("div",{class:"modal-scroll"},
+    var bodyChildren = [
       doneBtn,
       field("Assignee" + (fixed ? " · fixed" : ""), assignSeg),
-      field("Move day", dayPick),
-      skipBtn,
-      editLink
-    );
+      field("Move day", dayPick)
+    ];
+    // Template notes — surface here so whoever's doing the chore today can
+    // see "use the green sponge" without having to dig into the editor.
+    if(ch.notes && ch.notes.trim()){
+      bodyChildren.push(h("div",{style:"margin-top:14px;padding:11px 12px;border-radius:11px;background:var(--soft-accent);color:var(--soft-accent-text);font-size:13px;line-height:1.4;white-space:pre-wrap;"},
+        h("div",{style:"font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;opacity:0.8;margin-bottom:4px;", text:"📝 Notes"}),
+        h("div",{text: ch.notes})
+      ));
+    }
+    bodyChildren.push(skipBtn, editLink);
+    var body = h("div",{class:"modal-scroll"}, bodyChildren);
     var sheet = h("div",{class:"modal tall"}, topBar, body);
     attachSwipeClose(topBar, sheet, closeOccurrence);
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closeOccurrence(); } }}, sheet);
@@ -2542,7 +2550,7 @@
   var draft; var editingId=null; var draftOriginal=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null, notes:"" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2551,7 +2559,8 @@
     draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
       timesPerWeek: c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1,
       effort:effortOf(c), pinned:!!c.pinned,
-      linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null };
+      linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null,
+      notes: c.notes || "" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2564,6 +2573,8 @@
     if(!target){ target={ id:Date.now() }; S.chores.push(target); }
     var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
     target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
+    var notes = (d.notes || "").trim();
+    if(notes) target.notes = notes; else delete target.notes;
     // Templates store cadence only — no day/anchor. Whatever lingered from the
     // old shape gets cleared on every save, so chore docs stay clean.
     delete target.weekdays; delete target.startDate; delete target.dayOfMonth; delete target.linkedAfter; delete target.schedule;
@@ -2642,7 +2653,13 @@
       onClick:function(){ d.pinned=!d.pinned; render(); },
       text:(d.pinned?"🔒 Always "+S.names[d.assignee]+" — tap to unfix":"🔓 Free — tap to always be "+S.names[d.assignee]) });
 
-    var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn) ];
+    var notesIn=h("textarea",{
+      placeholder:"e.g. Use the green sponge for the pans",
+      style:"width:100%;min-height:60px;padding:10px 12px;border:1.5px solid var(--border);border-radius:11px;background:var(--input-bg);color:var(--text);font:inherit;font-size:14px;resize:vertical;",
+      onInput:function(e){ d.notes=e.target.value; }
+    });
+    notesIn.value = d.notes || "";
+    var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn), field("Notes (optional)", notesIn) ];
     // Linked task toggle + parent / days inputs. When linked, schedule fields are
     // hidden because the schedule is fully derived from the parent.
     var hasLink = !!(d.linkedAfter && d.linkedAfter.taskId);
