@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v109";
+  var APP_VERSION = "v110";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -963,8 +963,8 @@
     var key = occKey(ch.id, nextDate);
     var existing = S.occurrences[key];
     if(existing && !existing.tombstone) return; // don't double up
-    var who = (ch.rotate && (ch.assignee === 0 || ch.assignee === 1))
-      ? (1 - ch.assignee) // rotate hands off the swap (see auto-rotate feature)
+    var who = ch.rotate
+      ? nextRotatedAssignee(ch)
       : (ch.assignee === 0 || ch.assignee === 1) ? ch.assignee : null;
     S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
     cascadeAddAfter(ch.id, nextDate);
@@ -2275,6 +2275,25 @@
   // tap again to remove. Done occurrences refuse the tap — undo via the
   // Occurrence sheet first. New occurrences inherit the row's current
   // assignee, falling through to the chore template default.
+  // For a rotate-mode chore, the default assignee on a new occurrence is
+  // whoever DIDN'T get the most recent one. Looks back across S.occurrences
+  // for the latest non-tombstoned assignment; on the very first occurrence
+  // ever, falls back to the chore template's default assignee.
+  function nextRotatedAssignee(c){
+    var idStr = String(c.id);
+    var latest = null;
+    Object.keys(S.occurrences).forEach(function(key){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var o = S.occurrences[key];
+      if(!o || o.tombstone) return;
+      if(o.assignee !== 0 && o.assignee !== 1) return;
+      var dStr = key.slice(dash + 1);
+      if(!latest || dStr > latest.dStr) latest = { dStr: dStr, assignee: o.assignee };
+    });
+    if(latest) return 1 - latest.assignee;
+    return (c.assignee === 0 || c.assignee === 1) ? c.assignee : 0;
+  }
   function planWeekToggleDay(row, dayIdx){
     var date = addDays(row.weekStart, dayIdx);
     var key = occKey(row.chore.id, date);
@@ -2287,9 +2306,16 @@
       delete S.occurrences[key];
       cascadeRemoveAfter(row.chore.id, date);
     } else {
-      var who = (row.assignee === 0 || row.assignee === 1) ? row.assignee
-              : (row.chore.assignee === 0 || row.chore.assignee === 1) ? row.chore.assignee
-              : null;
+      var who;
+      if(row.chore.rotate){
+        // Rotate ignores the row's prior assignment and the template default
+        // in favour of "the one who didn't do it last time".
+        who = nextRotatedAssignee(row.chore);
+      } else {
+        who = (row.assignee === 0 || row.assignee === 1) ? row.assignee
+            : (row.chore.assignee === 0 || row.chore.assignee === 1) ? row.chore.assignee
+            : null;
+      }
       S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
       cascadeAddAfter(row.chore.id, date);
     }
@@ -2388,7 +2414,7 @@
           row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
             h("span",{style:"font-size:20px;", text:r.chore.icon || "🧽"}),
             h("div",{style:"flex:1;min-width:0;"},
-              h("div",{style:"font-weight:700;font-size:14px;", text:(r.fixed?"🔒 ":"") + r.chore.name}),
+              h("div",{style:"font-weight:700;font-size:14px;", text:(r.fixed?"🔒 ":"") + (r.chore.rotate?"↻ ":"") + r.chore.name}),
               h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;",
                 text: scheduleLabel(r.chore) + " · " + effortOf(r.chore) + " pt each"
                     + (r.scheduledCount > 0 ? " · " + r.scheduledCount + " scheduled" : "")
@@ -2626,7 +2652,7 @@
   var draft; var editingId=null; var draftOriginal=null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, linkedAfter:null, notes:"", recurrenceMode:"afterCompletion" };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, rotate:false, linkedAfter:null, notes:"", recurrenceMode:"afterCompletion" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2634,7 +2660,7 @@
     editingId=c.id;
     draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
       timesPerWeek: c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1,
-      effort:effortOf(c), pinned:!!c.pinned,
+      effort:effortOf(c), pinned:!!c.pinned, rotate:!!c.rotate,
       linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null,
       notes: c.notes || "",
       recurrenceMode: c.recurrenceMode || ((c.freq === "Biweekly" || c.freq === "Monthly") ? "afterCompletion" : "calendar") };
@@ -2649,7 +2675,12 @@
     if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
     if(!target){ target={ id:Date.now() }; S.chores.push(target); }
     var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
-    target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort; target.pinned=d.pinned;
+    target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort;
+    // Assignment mode is one of: pick (default) / pinned (Fixed) / rotate.
+    // Mutually exclusive — pinned and rotate can't both be true on a single
+    // chore. UI guards this; commitDraft enforces it as a safety net.
+    target.pinned = !!d.pinned && !d.rotate;
+    if(d.rotate && !d.pinned) target.rotate = true; else delete target.rotate;
     var notes = (d.notes || "").trim();
     if(notes) target.notes = notes; else delete target.notes;
     if(d.freq === "Biweekly" || d.freq === "Monthly"){
@@ -2730,10 +2761,31 @@
       style:(d.effort===e?"border-color:"+DIFF[e].color+";color:"+DIFF[e].color+";background:var(--surface)":""),
       onClick:function(){ d.effort=e; render(); }, text:DIFF[e].label})); });
     var assignSeg=h("div",{class:"seg"});
-    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null) d.pinned=false; render(); }, text:(p==null?"Nobody":S.names[p])})); });
-    var pinBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid "+(d.pinned?"var(--accent1)":"var(--border)")+";border-radius:11px;background:"+(d.pinned?"var(--soft-accent)":"var(--input-bg)")+";color:"+(d.pinned?"var(--soft-accent-text)":"var(--muted)")+";font:inherit;font-weight:700;cursor:pointer;",
-      onClick:function(){ d.pinned=!d.pinned; render(); },
-      text:(d.pinned?"🔒 Always "+S.names[d.assignee]+" — tap to unfix":"🔓 Free — tap to always be "+S.names[d.assignee]) });
+    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null){ d.pinned=false; d.rotate=false; } render(); }, text:(p==null?"Nobody":S.names[p])})); });
+    // Assignment-mode picker — three exclusive modes. Pick = planner asks
+    // each time (current default), Fixed = always c.assignee, Rotate =
+    // alternates each new occurrence (looks at the most recent past
+    // assignment and flips). Only meaningful when an assignee is set.
+    var modeBtns = h("div",{class:"seg"});
+    var modes = [
+      ["pick",   "🎲 Pick",  "Planner asks each occurrence"],
+      ["fixed",  "🔒 Fixed", "Always " + (d.assignee != null ? S.names[d.assignee] : "this person")],
+      ["rotate", "↻ Rotate", "Alternates Nico ↔ Caro automatically"]
+    ];
+    var currentMode = d.pinned ? "fixed" : d.rotate ? "rotate" : "pick";
+    modes.forEach(function(m){
+      modeBtns.appendChild(h("button",{
+        class: (currentMode === m[0] ? "on" : ""),
+        onClick: function(){
+          d.pinned = (m[0] === "fixed");
+          d.rotate = (m[0] === "rotate");
+          render();
+        },
+        text: m[1]
+      }));
+    });
+    var modeHint = h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;",
+      text: (modes.filter(function(m){ return m[0] === currentMode; })[0] || modes[0])[2] });
 
     var notesIn=h("textarea",{
       placeholder:"e.g. Use the green sponge for the pans",
@@ -2815,7 +2867,7 @@
     }
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
-    if(d.assignee!=null) modalBody.push(field("Fixed assignee", pinBtn));
+    if(d.assignee!=null) modalBody.push(field("Assignment", h("div",{}, modeBtns, modeHint)));
     // Read-only "Used this week" — the recurring definition stays clean, but
     // we still show where this chore landed this week so you can hop into the
     // Occurrence sheet to edit just that date. Editing existing chores only.
