@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v118";
+  var APP_VERSION = "v119";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3176,6 +3176,15 @@
   }
   function viewTasks(){
     var wrap=h("div",{class:"content"});
+    // Quick monthly task split — same number the Stats workload bar shows,
+    // surfaced here so you don't have to switch tabs just to glance at it.
+    var split = monthlyTaskCounts(null);
+    var splitRow = h("div",{style:"display:flex;justify-content:center;gap:14px;margin:0 0 12px;font-size:12.5px;font-weight:700;"},
+      h("span",{style:"color:"+PC[0].c, text:S.names[0]+" "+split[0]+(split[0]===1?" task":" tasks")}),
+      h("span",{style:"color:var(--muted);opacity:0.5;", text:"•"}),
+      h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+split[1]+(split[1]===1?" task":" tasks")})
+    );
+    wrap.appendChild(splitRow);
     // Archived (done-and-tucked-away) one-time tasks live behind a foldable
     // section so the main list stays about 'what I still have to do'.
     var live = [], archived = [];
