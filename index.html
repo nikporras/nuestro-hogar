@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v113";
+  var APP_VERSION = "v114";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -380,7 +380,7 @@
   var S = {
     chores: load("nh_chores", defaultChores()),
     names:  load("nh_names", ["Nico","Caro"]),
-    doneLog:load("nh_doneLog", seedDoneLog()),
+    doneLog:load("nh_doneLog", {}),
     reminders: load("nh_reminders", []),
     occurrences: load("nh_occurrences", {}),
     balances: load("nh_balances", [0,0]),
@@ -388,15 +388,12 @@
     redemptions: load("nh_redemptions", []),
     badges: load("nh_badges", {}),
     maxStreaks: load("nh_maxStreaks", [0,0]),
-    plannedWeeks: load("nh_plannedWeeks", {}),
     badgeBaselineDate: load("nh_badgeBaselineDate", null),
     badgeBaselineAt:   load("nh_badgeBaselineAt", null),
     scheduleClearedAt: load("nh_scheduleClearedAt", null),
-    suppressInitialMaterialisation: load("nh_suppressInitialMaterialisation", false),
     rumMilestonesHit: load("nh_rumMilestonesHit", { "0": [], "1": [] }),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     holidayMode: load("nh_holidayMode", false),
-    balancesMigratedAt: parseInt(localStorage.getItem("nh_balancesMigratedAt")||"0",10) || null,
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
     selectedWeekDay: TODAY.getDay(),
@@ -433,15 +430,12 @@
     localStorage.setItem("nh_redemptions",JSON.stringify(S.redemptions));
     localStorage.setItem("nh_badges",JSON.stringify(S.badges));
     localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
-    localStorage.setItem("nh_plannedWeeks",JSON.stringify(S.plannedWeeks));
     localStorage.setItem("nh_badgeBaselineDate", JSON.stringify(S.badgeBaselineDate));
     localStorage.setItem("nh_badgeBaselineAt", JSON.stringify(S.badgeBaselineAt));
     localStorage.setItem("nh_scheduleClearedAt", JSON.stringify(S.scheduleClearedAt));
-    localStorage.setItem("nh_suppressInitialMaterialisation", JSON.stringify(!!S.suppressInitialMaterialisation));
     localStorage.setItem("nh_rumMilestonesHit", JSON.stringify(S.rumMilestonesHit || { "0": [], "1": [] }));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     localStorage.setItem("nh_holidayMode", JSON.stringify(!!S.holidayMode));
-    if(S.balancesMigratedAt) localStorage.setItem("nh_balancesMigratedAt", String(S.balancesMigratedAt));
   }catch(e){} }
   function save(){
     ensureOccurrences();
@@ -473,31 +467,6 @@
     });
     return changed;
   }
-  function migrateBalancesOnce(){
-    if(S.balancesMigratedAt) return;
-    if(!S.doneLog || !S.chores) { S.balancesMigratedAt = Date.now(); return; }
-    S.balances = [0, 0];
-    var byId = {};
-    S.chores.forEach(function(c){ byId[c.id] = c; });
-    Object.keys(S.doneLog).forEach(function(key){
-      var underscore = key.indexOf("_");
-      if(underscore < 0) return;
-      var chId = parseInt(key.slice(0, underscore), 10);
-      var who  = S.doneLog[key];
-      var c = byId[chId];
-      if(c && (who === 0 || who === 1)) S.balances[who] += effortOf(c);
-    });
-    // Subtract any redemptions that were already on the doc.
-    if(Array.isArray(S.redemptions)){
-      S.redemptions.forEach(function(r){
-        if(r && (r.by === 0 || r.by === 1) && typeof r.rewardCost === "number"){
-          S.balances[r.by] -= r.rewardCost;
-        }
-      });
-    }
-    S.balancesMigratedAt = Date.now();
-  }
-
   // ---------- rewards catalog + redemptions (Phase 3) ----------
   function addReward(name, cost){
     var c = Math.max(1, parseInt(cost, 10) || 1);
@@ -796,12 +765,6 @@
       });
     });
   }
-  // Drop the obsolete plannedWeeks shape on sight — pre-occurrences clients
-  // are well past their shelf life. No need to migrate to tombstones since
-  // there's no schedule to anchor them to anymore.
-  function migratePlannedWeeksOnce(){
-    if(S.plannedWeeks) S.plannedWeeks = null;
-  }
 
   // Tombstones outside the rolling materialisation window do no work — sweep them
   // off the synced doc so old "skip this day" records don't accumulate forever.
@@ -892,7 +855,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, plannedWeeks:S.plannedWeeks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, balancesMigratedAt:S.balancesMigratedAt, scheduleClearedAt:S.scheduleClearedAt, suppressInitialMaterialisation:!!S.suppressInitialMaterialisation, holidayMode:!!S.holidayMode, rumMilestonesHit:S.rumMilestonesHit }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:!!S.holidayMode, rumMilestonesHit:S.rumMilestonesHit }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -905,19 +868,12 @@
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
-    if(d.plannedWeeks&&typeof d.plannedWeeks==="object") S.plannedWeeks=d.plannedWeeks;
-    // A phone on the older build may push S.plannedWeeks instead of per-occurrence
-    // tombstones — convert as soon as we receive it, so the rest of the app only
-    // has to know the new shape.
-    migratePlannedWeeksOnce();
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
-    if(typeof d.suppressInitialMaterialisation==="boolean") S.suppressInitialMaterialisation=d.suppressInitialMaterialisation;
     if(typeof d.holidayMode==="boolean") S.holidayMode=d.holidayMode;
     if(d.rumMilestonesHit && typeof d.rumMilestonesHit==="object") S.rumMilestonesHit=d.rumMilestonesHit;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
-    if(typeof d.balancesMigratedAt==="number") S.balancesMigratedAt=d.balancesMigratedAt;
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally. Also refresh derived state
     // (streak personal bests, badge unlocks) so the partner's work shows on this
@@ -985,12 +941,6 @@
   }
 
   // Seed a realistic-looking history for the current week so Logros/Mes look alive.
-  function seedDoneLog(){
-    // Templates carry no schedule, so the legacy 'pre-fill some random past
-    // completions' seed has nothing to anchor against. Fresh installs start
-    // with a clean doneLog and let real completions populate it.
-    return {};
-  }
 
   // ---------- per-occurrence helpers (Phase 2) ----------
   // Reads prefer the occurrence record; for dates outside the materialised window
@@ -1007,10 +957,6 @@
     var key = ch.id+"_"+ymd(date);
     if(S.doneLog && Object.prototype.hasOwnProperty.call(S.doneLog, key)) return S.doneLog[key];
     return ch.assignee;
-  }
-  function occPinned(ch, date){
-    var o = occ(ch, date);
-    return o ? !!o.pinned : !!ch.pinned;
   }
   // Writes always go to the occurrence record; doneLog is kept in sync so older
   // code paths (stats, snapshots) keep working until they're migrated too.
@@ -1426,7 +1372,6 @@
     S.badgeBaselineDate = ymd(TODAY);
     S.badgeBaselineAt = new Date().toISOString();
     S.badgeBaselineBalances = [0, 0];
-    S.balancesMigratedAt = null;
     S.rumMilestonesHit = { "0": [], "1": [] };
     invalidateBadgeStats();
     save();
@@ -1617,7 +1562,10 @@
     var done = isDone(ch, date);
     var eff  = effortOf(ch);
     var who  = occAssignee(ch, date);
-    var lock = occPinned(ch, date);
+    // 🔒 on the card means "this chore is Fixed to a person" — a template
+    // fact. (Occurrence-level pinned stopped meaning anything once every
+    // generated record carried it.)
+    var lock = !!ch.pinned && (ch.assignee === 0 || ch.assignee === 1);
     var openSheet = function(){ openOccurrence(ch, date); };
     // Staleness tint only on undone cards — done is already a visual story.
     var stale = done ? null : stalenessBorderColor(ch);
@@ -3268,9 +3216,7 @@
 
   captureAuthFromHash();
   maybeWeeklySnapshot();
-  migratePlannedWeeksOnce();
   ensureOccurrences();
-  migrateBalancesOnce();
   clampBalances();
   updateMaxStreaks();
   evaluateBadges();
