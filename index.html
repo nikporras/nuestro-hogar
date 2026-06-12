@@ -232,7 +232,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v112";
+  var APP_VERSION = "v113";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -300,24 +300,24 @@
     return !!(o && !o.tombstone);
   }
 
-  // Templates store cadence only — no days, no anchor. The Planning sheet is
-  // the single source of truth for occurrence dates; getSchedule just maps
-  // freq to a tagged kind so the rest of the code stays switchable.
+  // Templates describe a recurring series: weekly = which weekdays, the
+  // rest = a start date the cycle counts from. The generator
+  // (materialiseSeries) turns this into occurrences; views only ever read
+  // the occurrence map.
   function getSchedule(c){
     if(c.linkedAfter && c.linkedAfter.taskId){
       return { kind:"after", parentId: c.linkedAfter.taskId, days: c.linkedAfter.days || 1 };
     }
     switch(c.freq){
       case "Daily":    return { kind:"daily" };
-      // Fall back to the legacy weekdays.length when timesPerWeek isn't set,
-      // so chores carried over from the anchored-schedule era keep the right
-      // cadence label without forcing a re-edit. e.g. weekdays:[1,4] → 2×.
-      case "Weekly":   return { kind:"weekly",   times: Math.max(1, Math.min(7, c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1)) };
+      case "Weekly":   return { kind:"weekly",   days: c.weekdays || [] };
       case "Biweekly": return { kind:"biweekly" };
       case "Monthly":  return { kind:"monthly" };
     }
     return { kind:"none" };
   }
+  // Weekdays (Sun=0..Sat=6) sorted Monday-first for display.
+  function sortedWeekdays(arr){ return (arr||[]).slice().sort(function(a,b){ return ((a+6)%7)-((b+6)%7); }); }
 
   // Human-readable cadence shown in Tasks / chore details.
   function scheduleLabel(c){
@@ -328,9 +328,11 @@
         return "After " + (parent ? parent.name : "?") + " · +" + sch.days + " day" + (sch.days>1?"s":"");
       }
       case "daily":    return "Every day";
-      case "weekly":   return sch.times > 1 ? (sch.times + "× a week") : "Once a week";
-      case "biweekly": return "Every 2 weeks";
-      case "monthly":  return "Once a month";
+      case "weekly":   return sch.days.length
+                         ? sortedWeekdays(sch.days).map(function(d){ return DOW_SHORT[d]; }).join(" · ")
+                         : "Weekly · no days set";
+      case "biweekly": return c.startDate ? "Every 2 weeks" : "Every 2 weeks · not scheduled";
+      case "monthly":  return c.startDate ? "Every 4 weeks" : "Every 4 weeks · not scheduled";
     }
     return "";
   }
@@ -366,7 +368,7 @@
     return [
       {id:1, name:"Wash the dishes",       freq:"Daily",    assignee:0, icon:"🍽️", effort:2},
       {id:2, name:"Water the plants",      freq:"Daily",    assignee:1, icon:"🌱", effort:1},
-      {id:3, name:"Take out the trash",    freq:"Weekly",   assignee:1, icon:"🗑️", effort:1, timesPerWeek:2},
+      {id:3, name:"Take out the trash",    freq:"Weekly",   assignee:1, icon:"🗑️", effort:1, weekdays:[1,4], rotate:true},
       {id:4, name:"Vacuum the living room",freq:"Weekly",   assignee:0, icon:"🧹", effort:2},
       {id:5, name:"Clean the bathroom",    freq:"Weekly",   assignee:0, icon:"🚿", effort:3},
       {id:6, name:"Weekly groceries",      freq:"Weekly",   assignee:1, icon:"🛒", effort:3},
@@ -612,11 +614,8 @@
 
   function ensureOccurrences(){
     if(!S.occurrences || typeof S.occurrences!=="object") S.occurrences={};
-    // The Planning sheet is the only writer of pinned/assigned occurrences.
-    // ensureOccurrences's only remaining job is the doneLog → occurrence
-    // backfill so legacy completions (from before the per-occurrence record
-    // existed) still surface as cards / receipts. Bounded to a recent window
-    // so we're not iterating the whole chore × date space every startup.
+    // 1) doneLog → occurrence backfill so legacy completions still surface
+    //    as cards / receipts. Bounded to a recent window.
     var pastFrom = addDays(startOfWeek(TODAY), -7);
     var futureTo = addDays(TODAY, 14);
     for(var i=0;i<S.chores.length;i++){
@@ -630,15 +629,133 @@
         }
       }
     }
+    // 2) generate the recurring series forward, 3) keep linked-after chores
+    //    mirroring their parents, 4) sweep ancient tombstones.
+    materialiseSeries();
     syncAfterChores();
     pruneOldTombstones();
   }
-  // After-chores derive their dates from a parent + N days. The live
-  // cascade hooks (cascadeAddAfter / cascadeRemoveAfter) keep the two in
-  // sync as you tap in the planner; this pass cleans up the data on
-  // startup / pull: orphan child occurrences whose parent date isn't
-  // scheduled get dropped, and child occurrences get backfilled wherever
-  // a parent is scheduled but the child isn't.
+  function parseYmd(s){
+    if(!s) return null;
+    var p = String(s).split("-");
+    if(p.length !== 3) return null;
+    var d = new Date(+p[0], +p[1]-1, +p[2]); d.setHours(0,0,0,0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // Latest occurrence for a chore matching a predicate — shared scan used
+  // by rotation, staleness, and the series generator.
+  function latestOccFor(c, pred){
+    var idStr = String(c.id), best = null;
+    Object.keys(S.occurrences || {}).forEach(function(key){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var o = S.occurrences[key];
+      if(!o || !pred(o)) return;
+      var dStr = key.slice(dash + 1);
+      if(!best || dStr > best.dStr) best = { dStr: dStr, o: o };
+    });
+    return best;
+  }
+  // Any record (including tombstones — they mean "user said no") on or
+  // after the given date? Used to decide whether an after-completion chore
+  // still needs its first card seeded.
+  function hasOccOnOrAfter(c, date){
+    var idStr = String(c.id), fromStr = ymd(date), found = false;
+    Object.keys(S.occurrences || {}).forEach(function(key){
+      if(found) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      if(key.slice(dash + 1) >= fromStr) found = true;
+    });
+    return found;
+  }
+  // For a rotate (Alternate) chore, the next default assignee is whoever
+  // DIDN'T get the most recent occurrence. First time ever falls back to
+  // the template default.
+  function nextRotatedAssignee(c){
+    var latest = latestOccFor(c, function(o){
+      return !o.tombstone && (o.assignee === 0 || o.assignee === 1);
+    });
+    if(latest) return 1 - latest.o.assignee;
+    return (c.assignee === 0 || c.assignee === 1) ? c.assignee : 0;
+  }
+  // When a parent chore gains an occurrence, its linked-after children get
+  // one at parent date + N. Child assignee defaults to the child template's
+  // own person (wash · Nico can pair with fold · Caro).
+  function cascadeAddAfter(parentChoreId, parentDate){
+    S.chores.forEach(function(c){
+      if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
+      var d = addDays(parentDate, c.linkedAfter.days || 1);
+      var key = occKey(c.id, d);
+      var existing = S.occurrences[key];
+      if(existing && !existing.tombstone) return;
+      var who = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+      S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
+    });
+  }
+  // ---------- recurring-series generator ----------
+  // Templates describe a series (weekdays for weekly, a start date for
+  // biweekly / monthly / daily); this fills the occurrence map forward over
+  // a rolling window. Existing records — including tombstones, which mean
+  // the user removed that date — are never overwritten, so moves and skips
+  // stick. Runs on every save/startup/pull via ensureOccurrences.
+  var SERIES_HORIZON_DAYS = 56;
+  function materialiseSeries(){
+    var horizon = addDays(TODAY, SERIES_HORIZON_DAYS);
+    S.chores.forEach(function(c){
+      var sch = getSchedule(c);
+      if(sch.kind === "after" || sch.kind === "none") return;
+      // After-completion cycles self-perpetuate from toggleDone; the
+      // generator only seeds the very first card.
+      if((sch.kind === "biweekly" || sch.kind === "monthly") && c.recurrenceMode === "afterCompletion"){
+        if(hasOccOnOrAfter(c, TODAY)) return;
+        if(latestOccFor(c, function(o){ return !!o.done; })) return; // history exists; done-marking drives it
+        var seed = parseYmd(c.startDate);
+        if(!seed) return; // unscheduled — stays dormant until a date is picked
+        var d0 = seed > TODAY ? seed : TODAY;
+        S.occurrences[occKey(c.id, d0)] = { assignee: seriesAssignee(c, null), done:false, doneAt:null, pinned:true };
+        return;
+      }
+      // Calendar series: collect this chore's dates inside the window.
+      var dates = [];
+      if(sch.kind === "daily"){
+        var sd = parseYmd(c.startDate);
+        if(!sd) return; // unscheduled
+        for(var d1 = (sd > TODAY ? new Date(sd) : new Date(TODAY)); d1 <= horizon; d1 = addDays(d1, 1)) dates.push(new Date(d1));
+      } else if(sch.kind === "weekly"){
+        if(!sch.days || !sch.days.length) return; // unscheduled
+        for(var d2 = new Date(TODAY); d2 <= horizon; d2 = addDays(d2, 1)){
+          if(sch.days.indexOf(d2.getDay()) >= 0) dates.push(new Date(d2));
+        }
+      } else { // biweekly / monthly on a fixed cycle
+        var anchor = parseYmd(c.startDate);
+        if(!anchor) return; // unscheduled
+        var step = sch.kind === "biweekly" ? 14 : 28;
+        var diff = daysBetween(anchor, TODAY);
+        var n = diff > 0 ? Math.ceil(diff / step) : 0;
+        for(var d3 = addDays(anchor, n * step); d3 <= horizon; d3 = addDays(d3, step)) dates.push(new Date(d3));
+      }
+      // Place, alternating per occurrence when the chore rotates.
+      var rot = c.rotate ? nextRotatedAssignee(c) : null;
+      dates.forEach(function(d){
+        var key = occKey(c.id, d);
+        if(S.occurrences[key]) return; // anything there (incl. tombstone) wins
+        S.occurrences[key] = { assignee: seriesAssignee(c, rot), done:false, doneAt:null, pinned:true };
+        if(c.rotate) rot = 1 - rot;
+      });
+    });
+  }
+  // Assignee for a generated occurrence: Alternate uses the rolling rotation
+  // value; Fixed uses the template person; no person set = Anyone.
+  function seriesAssignee(c, rot){
+    if(c.rotate) return (rot === 0 || rot === 1) ? rot : nextRotatedAssignee(c);
+    return (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+  }
+  // After-chores derive their dates from a parent + N days. cascadeAddAfter
+  // covers live additions; this pass cleans up on startup / pull: orphan
+  // child occurrences whose parent date isn't scheduled get dropped, and
+  // children get backfilled wherever a parent is scheduled but the child
+  // isn't.
   function syncAfterChores(){
     if(!S.occurrences) return;
     var children = S.chores.filter(function(c){ return c.linkedAfter && c.linkedAfter.taskId; });
@@ -1326,16 +1443,18 @@
   // too. Templates, doneLog history, balances, rewards, badges, streaks, and
   // reminders are all untouched.
   function clearAllOccurrences(){
-    if(!confirm("Clear ALL planned occurrences? Every assignment, lock, skip, and scheduled card is wiped — the board goes completely empty until you plan again. Your chore list, history, Purrs, rewards, and badges stay. This can't be undone.")) return;
-    // With templates carrying no schedule, the old 'tombstone past natural-
-    // due dates' step is moot — a date is 'due' only if we placed an
-    // occurrence there in the first place. Just wipe the map.
+    if(!confirm("Unschedule EVERYTHING? Every card disappears and every task loses its days — they stay in your list but won't show up again until you open each one and set its days. History, Purrs, rewards, and badges stay. This can't be undone.")) return;
+    // Wiping occurrences alone isn't enough anymore — the series generator
+    // would refill them on the next save. Clearing each template's series
+    // config (weekdays / startDate) is what actually silences generation;
+    // the task goes dormant until the user re-picks its days.
     S.occurrences = {};
+    S.chores.forEach(function(c){ delete c.weekdays; delete c.startDate; });
     S.scheduleClearedAt = new Date().toISOString();
     invalidateBadgeStats();
     save();
     render();
-    alert("Done. The board is empty — head to the Tasks tab and tap 🔀 Plan whenever you're ready.");
+    alert("Done. All tasks are unscheduled — open each one on the Tasks tab to set its days again.");
   }
 
   // Called from save(); checks every badge predicate, records the unlock instant.
@@ -1460,34 +1579,21 @@
   }
 
   // ---------- components ----------
-  // Most recent done date for this chore, anywhere in S.occurrences. Returns
-  // null if it's never been completed. Used by staleness coloring + the
-  // rotate helper. Walks the map once — cheap for typical sizes.
+  // Most recent done date for this chore. Null if never completed. Drives
+  // staleness coloring.
   function lastDoneDate(c){
-    if(!S.occurrences) return null;
-    var idStr = String(c.id);
-    var latest = null;
-    Object.keys(S.occurrences).forEach(function(key){
-      var dash = key.indexOf("_"); if(dash < 0) return;
-      if(key.slice(0, dash) !== idStr) return;
-      var o = S.occurrences[key];
-      if(!o || !o.done) return;
-      var dStr = key.slice(dash + 1);
-      if(!latest || dStr > latest) latest = dStr;
-    });
-    if(!latest) return null;
-    var sp = latest.split("-");
-    return new Date(+sp[0], (+sp[1])-1, +sp[2]);
+    var latest = latestOccFor(c, function(o){ return !!o.done; });
+    return latest ? parseYmd(latest.dStr) : null;
   }
   // Expected cadence interval in days — what 'on time' looks like for this
   // chore. Drives the staleness color on undone cards.
   function expectedIntervalDays(c){
     switch(c.freq){
       case "Daily":    return 1;
-      case "Weekly":   var n = c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1;
+      case "Weekly":   var n = (c.weekdays && c.weekdays.length) || 1;
                        return Math.max(1, Math.round(7 / n));
       case "Biweekly": return 14;
-      case "Monthly":  return c.afterCompletionDays || 30;
+      case "Monthly":  return 28;
     }
     return 7;
   }
@@ -1800,26 +1906,21 @@
           h("span",{style:"font-size:18px;font-weight:800;", text:"›"})
         ));
       } else {
-        // Count rows that have days scheduled but no person yet — those are
-        // the ones the user actually still has to decide on. Empty rows
-        // (no days picked) are silent: nothing to nudge until something's
-        // on the board.
-        var pendingCount = 0;
-        var dataCue = planMonthWorkload(0);
-        dataCue.weeks.forEach(function(wk){
-          wk.rows.forEach(function(r){
-            if(r.allDone || r.mixed) return;
-            if(r.scheduledCount === 0) return;
-            if(r.assignee === 0 || r.assignee === 1) return;
-            pendingCount++;
-          });
-        });
-        if(pendingCount > 0){
+        // The series generator keeps the board filled, so the only thing
+        // worth nudging about is a chore with no series config at all —
+        // no weekdays (weekly) or no start date (the rest). Tap → Tasks.
+        var unscheduled = S.chores.filter(function(c){
+          var sch = getSchedule(c);
+          if(sch.kind === "after" || sch.kind === "none") return false;
+          if(sch.kind === "weekly") return !(c.weekdays && c.weekdays.length);
+          return !c.startDate;
+        }).length;
+        if(unscheduled > 0){
           wrap.appendChild(h("div",{
             style:"background:var(--soft-accent);color:var(--soft-accent-text);padding:9px 12px;border-radius:11px;margin-bottom:12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:700;",
-            onClick: function(){ openPlanMonth(0); }
+            onClick: function(){ S.tab = "tasks"; render(); }
           },
-            h("span",{text: "🔀 " + pendingCount + " row" + (pendingCount===1?"":"s") + " need a person · tap to plan"}),
+            h("span",{text: "🗓️ " + unscheduled + " task" + (unscheduled===1?" isn't":"s aren't") + " scheduled yet · tap to set days"}),
             h("span",{style:"font-size:16px;font-weight:800;", text:"›"})
           ));
         }
@@ -1961,7 +2062,7 @@
       wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
     }
     wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send to calendar" }));
-    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Only weeks you've planned show up here. Use 🔀 Plan this week on the Tasks tab to fill in the next one."}));
+    wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Tasks repeat on the days set in their editor. Move or skip any single day by tapping its card."}));
     return wrap;
   }
 
@@ -1973,8 +2074,7 @@
     wrap.appendChild(h("div",{class:"section-title", text:"Workload split"}));
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
-      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)"),
-      h("button",{ style:"border:none;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font:inherit;font-weight:700;font-size:13px;padding:8px 15px;border-radius:20px;cursor:pointer;", onClick:function(){ openPlanMonth(0); }, text:"🔀 Plan month" })
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)")
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
@@ -1986,7 +2086,7 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Tap 🔀 Plan month to assign every chore for the month. Points stack up here as you mark each occurrence done."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Each task repeats on the days you set in its editor. Points stack up here as you mark each occurrence done."}));
     wrap.appendChild(rep);
 
     // Monthly leaderboard with ‹ › navigation back to previous months.
@@ -2241,324 +2341,6 @@
   // UI-only toggle for the Badges card: top 5 by default, full grid on tap.
   var badgesExpanded = false;
 
-  // ---------- Monthly Planning sheet ----------
-  // Plan a whole month in one pass. The month is split into Mon-Sun weeks
-  // (any week that overlaps the month is included). Per week, per chore =
-  // one row with an assignee toggle that applies to every natural-due
-  // date in that chore × week. Per-occurrence day moves / skips live in
-  // the Occurrence sheet — this sheet stays a simple "who does what".
-  //
-  // Live save on each tap, no Save button. Default for a fresh row is the
-  // chore's most recent prior owner (walk back 1-4 weeks), then the
-  // chore template's default, then null (Anyone).
-  var planMonthCtx = null;   // { monthOffset: integer relative to current month }
-  function openPlanMonth(offset){
-    planMonthCtx = { monthOffset: offset || 0 };
-    S.modal = "planMonth"; render();
-  }
-  function closePlanMonth(){ planMonthCtx = null; S.modal = null; render(); }
-  function monthWeeksFor(monthOffset){
-    var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth() + (monthOffset||0), 1);
-    var mLast  = new Date(mFirst.getFullYear(), mFirst.getMonth() + 1, 0);
-    var weeks = [];
-    // Only weeks that haven't ended yet — the Planning sheet is for "what's
-    // still ahead". Past weeks are a closed chapter; if you come back from
-    // a holiday and open the sheet, you don't have to scroll past blocks
-    // you already missed.
-    for(var d = startOfWeek(mFirst); d <= mLast; d = addDays(d, 7)){
-      var weekEnd = addDays(d, 6);
-      if(weekEnd < TODAY) continue;
-      weeks.push(new Date(d));
-    }
-    return { weeks: weeks, mFirst: mFirst, mLast: mLast };
-  }
-  // For a (chore, week) build the row state from occurrence records only.
-  // Templates have no schedule, so the planner doesn't compute "natural-due
-  // dates" — it just shows what's been placed plus a 7-day picker for adding
-  // more. Per-day occurrences live in row.perDay[0..6].
-  function planWeekInfo(c, weekStart){
-    var perDay = {};
-    var assignees = {};
-    var scheduledCount = 0, doneCount = 0;
-    for(var i = 0; i < 7; i++){
-      var d = addDays(weekStart, i);
-      var o = S.occurrences[occKey(c.id, d)];
-      if(!o || o.tombstone) continue;
-      perDay[i] = o;
-      scheduledCount++;
-      if(o.done) doneCount++;
-      assignees[String(o.assignee)] = (assignees[String(o.assignee)]||0) + 1;
-    }
-    var assignee = null, mixed = false;
-    var keys = Object.keys(assignees);
-    if(keys.length === 1){
-      assignee = keys[0] === "null" ? null : parseInt(keys[0], 10);
-    } else if(keys.length > 1){
-      mixed = true;
-    }
-    return {
-      chore: c,
-      weekStart: new Date(weekStart),
-      perDay: perDay,
-      scheduledCount: scheduledCount,
-      doneCount: doneCount,
-      pts: effortOf(c) * scheduledCount,
-      assignee: assignee,
-      mixed: mixed,
-      fixed: !!c.pinned && (c.assignee === 0 || c.assignee === 1),
-      allDone: scheduledCount > 0 && doneCount === scheduledCount
-    };
-  }
-  // Cascade after-chores when the parent gets a planner occurrence added or
-  // removed. Children's day = parent's day + linkedAfter.days; assignee
-  // defaults to the child template's own assignee so wash-on-Mon · Nico
-  // pairs with fold-on-Tue · Caro out of the box, but it's independent.
-  function cascadeAddAfter(parentChoreId, parentDate){
-    S.chores.forEach(function(c){
-      if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
-      var d = addDays(parentDate, c.linkedAfter.days || 1);
-      var key = occKey(c.id, d);
-      var existing = S.occurrences[key];
-      if(existing && !existing.tombstone) return;
-      var who = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
-      S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
-    });
-  }
-  function cascadeRemoveAfter(parentChoreId, parentDate){
-    S.chores.forEach(function(c){
-      if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
-      var d = addDays(parentDate, c.linkedAfter.days || 1);
-      var key = occKey(c.id, d);
-      var o = S.occurrences[key];
-      if(o && !o.done && !o.tombstone) delete S.occurrences[key];
-    });
-  }
-  // Toggle a single day on / off for this (chore, week) row. Tap to add,
-  // tap again to remove. Done occurrences refuse the tap — undo via the
-  // Occurrence sheet first. New occurrences inherit the row's current
-  // assignee, falling through to the chore template default.
-  // For a rotate-mode chore, the default assignee on a new occurrence is
-  // whoever DIDN'T get the most recent one. Looks back across S.occurrences
-  // for the latest non-tombstoned assignment; on the very first occurrence
-  // ever, falls back to the chore template's default assignee.
-  function nextRotatedAssignee(c){
-    var idStr = String(c.id);
-    var latest = null;
-    Object.keys(S.occurrences).forEach(function(key){
-      var dash = key.indexOf("_"); if(dash < 0) return;
-      if(key.slice(0, dash) !== idStr) return;
-      var o = S.occurrences[key];
-      if(!o || o.tombstone) return;
-      if(o.assignee !== 0 && o.assignee !== 1) return;
-      var dStr = key.slice(dash + 1);
-      if(!latest || dStr > latest.dStr) latest = { dStr: dStr, assignee: o.assignee };
-    });
-    if(latest) return 1 - latest.assignee;
-    return (c.assignee === 0 || c.assignee === 1) ? c.assignee : 0;
-  }
-  function planWeekToggleDay(row, dayIdx){
-    var date = addDays(row.weekStart, dayIdx);
-    var key = occKey(row.chore.id, date);
-    var o = S.occurrences[key];
-    if(o && o.done){
-      alert("'"+row.chore.name+"' is already done on this day. Tap the card on Today / Week / Month and undo it first to re-plan.");
-      return;
-    }
-    if(o && !o.tombstone){
-      delete S.occurrences[key];
-      cascadeRemoveAfter(row.chore.id, date);
-    } else {
-      var who;
-      if(row.chore.rotate){
-        // Rotate ignores the row's prior assignment and the template default
-        // in favour of "the one who didn't do it last time".
-        who = nextRotatedAssignee(row.chore);
-      } else {
-        who = (row.assignee === 0 || row.assignee === 1) ? row.assignee
-            : (row.chore.assignee === 0 || row.chore.assignee === 1) ? row.chore.assignee
-            : null;
-      }
-      S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
-      cascadeAddAfter(row.chore.id, date);
-    }
-    save(); render();
-  }
-  function planWeekSetAssignee(row, to){
-    if(row.fixed) return;
-    Object.keys(row.perDay).forEach(function(i){
-      var o = row.perDay[i];
-      if(o.done) return;
-      o.assignee = to;
-      o.pinned = true;
-    });
-    save(); render();
-  }
-  function planMonthWorkload(monthOffset){
-    var info = monthWeeksFor(monthOffset);
-    var total = [0, 0], totalPts = 0, weeks = [];
-    info.weeks.forEach(function(weekStart){
-      var perWeek = [0, 0], rows = [], weekTotal = 0;
-      S.chores.forEach(function(c){
-        var ri = planWeekInfo(c, weekStart);
-        // Every chore gets a row in every week — empty rows are how the
-        // user adds new dates. Skip nothing.
-        rows.push(ri);
-        weekTotal += ri.pts;
-        if(ri.assignee === 0 || ri.assignee === 1){
-          perWeek[ri.assignee] += ri.pts;
-          total[ri.assignee] += ri.pts;
-        }
-      });
-      totalPts += weekTotal;
-      weeks.push({ weekStart: weekStart, rows: rows, perWeek: perWeek, weekTotal: weekTotal });
-    });
-    return { weeks: weeks, total: total, totalPts: totalPts, mFirst: info.mFirst, mLast: info.mLast };
-  }
-  function modalPlanMonth(){
-    if(!planMonthCtx) return h("div");
-    var off = planMonthCtx.monthOffset || 0;
-    var data = planMonthWorkload(off);
-    var monthLabel = MONTHS[data.mFirst.getMonth()] + " " + data.mFirst.getFullYear();
-    // Back arrow disabled at the current month — you can't plan the past.
-    var backDisabled = off <= 0;
-    var navRow = h("div",{style:"display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 6px;"},
-      h("button",{
-        style:"border:none;background:"+(backDisabled?"transparent":"var(--surface)")+";color:var(--accent2);font-size:18px;font-weight:800;width:34px;height:34px;border-radius:50%;cursor:"+(backDisabled?"default":"pointer")+";opacity:"+(backDisabled?"0.2":"1")+";",
-        onClick: backDisabled ? null : function(){ planMonthCtx.monthOffset = off - 1; render(); },
-        text:"‹"
-      }),
-      h("div",{style:"font-weight:800;font-size:15px;text-align:center;", text:monthLabel}),
-      h("button",{
-        style:"border:none;background:var(--surface);color:var(--accent2);font-size:18px;font-weight:800;width:34px;height:34px;border-radius:50%;cursor:pointer;",
-        onClick:function(){ planMonthCtx.monthOffset = off + 1; render(); }, text:"›"
-      })
-    );
-    var workloadLine = h("div",{style:"display:flex;justify-content:center;align-items:center;gap:10px;font-weight:800;font-size:14px;"},
-      h("span",{style:"color:"+PC[0].c, text:S.names[0]+" "+data.total[0]+" pt"}),
-      h("span",{style:"color:var(--muted);", text:"|"}),
-      h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+data.total[1]+" pt"})
-    );
-    var totalsLine = h("div",{style:"text-align:center;color:var(--muted);font-size:11.5px;font-weight:700;margin-top:4px;letter-spacing:0.06em;",
-      text: data.weeks.length === 0
-        ? "Nothing ahead this month"
-        : data.totalPts + " pt total · " + data.weeks.length + " week" + (data.weeks.length===1?"":"s") + " left"});
-    var topBar = h("div",{class:"sheet-top"},
-      h("div",{class:"grab"}),
-      h("h3",{style:"margin:0 0 2px;font-size:17px;text-align:center;", text:"🔀 Plan the month"}),
-      navRow,
-      workloadLine,
-      totalsLine
-    );
-    var listEl = h("div",{class:"modal-scroll", style:"margin-top:10px;"});
-    if(data.weeks.length === 0){
-      listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:32px 8px;", text:"No weeks left to plan in "+monthLabel+"."}));
-    } else {
-      data.weeks.forEach(function(wk){
-        var weekEnd = addDays(wk.weekStart, 6);
-        var sm = MONTHS[wk.weekStart.getMonth()].slice(0,3);
-        var em = MONTHS[weekEnd.getMonth()].slice(0,3);
-        var headLabel = sm===em
-          ? sm+" "+wk.weekStart.getDate()+"–"+weekEnd.getDate()
-          : sm+" "+wk.weekStart.getDate()+" – "+em+" "+weekEnd.getDate();
-        var sectionHead = h("div",{style:"display:flex;align-items:baseline;justify-content:space-between;margin:14px 4px 8px;"},
-          h("div",{style:"font-weight:800;font-size:13.5px;", text:headLabel}),
-          h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:700;",
-            text: (wk.perWeek[0]||0)+" + "+(wk.perWeek[1]||0)+" of "+wk.weekTotal+" pt"})
-        );
-        listEl.appendChild(sectionHead);
-        if(wk.rows.length === 0){
-          listEl.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;padding:6px 0 4px;", text:"Nothing scheduled."}));
-        }
-        wk.rows.forEach(function(r){
-          var row = h("div",{style:"padding:10px 12px;border:1.5px solid var(--border);border-radius:12px;margin-bottom:8px;background:var(--input-bg);opacity:"+(r.allDone?"0.55":"1")+";"});
-          var partial = r.doneCount > 0 && !r.allDone;
-          var afterChild = !!(r.chore.linkedAfter && r.chore.linkedAfter.taskId);
-          row.appendChild(h("div",{style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;"},
-            h("span",{style:"font-size:20px;", text:r.chore.icon || "🧽"}),
-            h("div",{style:"flex:1;min-width:0;"},
-              h("div",{style:"font-weight:700;font-size:14px;", text:(r.fixed?"🔒 ":"") + (r.chore.rotate?"↻ ":"") + r.chore.name}),
-              h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;",
-                text: scheduleLabel(r.chore) + " · " + effortOf(r.chore) + " pt each"
-                    + (r.scheduledCount > 0 ? " · " + r.scheduledCount + " scheduled" : "")
-                    + (partial ? " · " + r.doneCount + " done" : "")
-                    + (r.allDone ? " · all done" : "")
-                    + (r.mixed ? " · mixed" : "")})
-            )
-          ));
-          // Day picker — 7 buttons Mon-Sun for this week. Tap to add a day,
-          // tap an already-scheduled day to remove it. Done days refuse the
-          // tap (they explain via alert). After-chores are read-only — they
-          // auto-follow their parent.
-          var dayPick = h("div",{style:"display:flex;gap:4px;margin-bottom:8px;"});
-          for(var i = 0; i < 7; i++){
-            (function(){
-              var di = i;
-              var d = addDays(r.weekStart, di);
-              var o = r.perDay[di];
-              var done = !!(o && o.done);
-              var scheduled = !!o;
-              var dayBg = done ? "var(--soft-accent)" : scheduled ? "var(--accent1)" : "var(--surface)";
-              var dayFg = scheduled ? "#fff" : "var(--text)";
-              var dayBorder = scheduled ? "var(--accent1)" : "var(--border)";
-              var disabledDay = afterChild;
-              dayPick.appendChild(h("button",{
-                style:"flex:1;padding:6px 0;border:1.5px solid "+dayBorder+";border-radius:9px;background:"+dayBg+";color:"+dayFg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabledDay?"default":"pointer")+";opacity:"+(disabledDay?"0.55":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
-                onClick: disabledDay
-                  ? function(){ alert("'"+r.chore.name+"' follows its parent — schedule the parent and this lands "+(r.chore.linkedAfter.days||1)+" day(s) later."); }
-                  : function(){ planWeekToggleDay(r, di); }
-              },
-                h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
-                h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
-              ));
-            })();
-          }
-          row.appendChild(dayPick);
-          var personPick = h("div",{style:"display:flex;gap:6px;"});
-          [null, 0, 1].forEach(function(p){
-            var picked = (r.assignee === p) && !r.mixed;
-            var label = p == null ? "Anyone" : S.names[p];
-            var fixedBlock = r.fixed && p !== r.chore.assignee;
-            var noScheduled = r.scheduledCount === 0;
-            var disabled = r.allDone || fixedBlock || noScheduled;
-            var bg = picked ? (p == null ? "var(--accent1)" : PC[p].c) : "var(--surface)";
-            var fg = picked ? "#fff" : "var(--text)";
-            var border = picked ? bg : "var(--border)";
-            var onTap;
-            if(fixedBlock){
-              onTap = (function(ch){ return function(){
-                alert("'"+ch.name+"' is locked to "+S.names[ch.assignee]+". Open the task and turn off Fixed assignee to plan it per week.");
-              }; })(r.chore);
-            } else if(r.allDone){
-              onTap = (function(ch){ return function(){
-                alert("'"+ch.name+"' is already done this week. Undo via the Occurrence sheet to re-assign.");
-              }; })(r.chore);
-            } else if(noScheduled){
-              onTap = function(){ alert("Tap a day above first, then pick who."); };
-            } else {
-              onTap = function(){ planWeekSetAssignee(r, p); };
-            }
-            personPick.appendChild(h("button",{
-              style:"flex:1;padding:7px 4px;border:1.5px solid "+border+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:12px;cursor:pointer;opacity:"+(disabled?"0.45":"1")+";",
-              onClick: onTap,
-              text: label
-            }));
-          });
-          row.appendChild(personPick);
-          listEl.appendChild(row);
-        });
-      });
-    }
-    var closeBtn = h("button",{
-      class:"btn primary",
-      style:"width:100%;margin-top:4px;",
-      text:"Close",
-      onClick: closePlanMonth
-    });
-    var sheet = h("div",{class:"modal tall"}, topBar, listEl, h("div",{class:"modal-actions", style:"margin-top:6px;"}, closeBtn));
-    attachSwipeClose(topBar, sheet, closePlanMonth);
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ closePlanMonth(); } }}, sheet);
-  }
-
 
   // ---------- badge detail modal ----------
   var badgeView = null;
@@ -2712,20 +2494,25 @@
 
   // ---------- add / edit chore modal ----------
   var draft; var editingId=null; var draftOriginal=null;
+  // Month shown by the editor's start-date calendar (device-local UI state,
+  // kept off the draft so it doesn't trip the dirty-check).
+  var editorCalBase = null;
   function openAdd(){
     editingId=null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", timesPerWeek:1, effort:2, pinned:false, rotate:false, linkedAfter:null, notes:"", recurrenceMode:"afterCompletion" };
+    editorCalBase = null;
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], startDate:null, effort:2, pinned:false, rotate:true, linkedAfter:null, notes:"", recurrenceMode:"calendar" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
   function openEdit(c){
     editingId=c.id;
+    editorCalBase = null;
     draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
-      timesPerWeek: c.timesPerWeek || (c.weekdays && c.weekdays.length) || 1,
+      weekdays:(c.weekdays || []).slice(), startDate: c.startDate || null,
       effort:effortOf(c), pinned:!!c.pinned, rotate:!!c.rotate,
       linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null,
       notes: c.notes || "",
-      recurrenceMode: c.recurrenceMode || ((c.freq === "Biweekly" || c.freq === "Monthly") ? "afterCompletion" : "calendar") };
+      recurrenceMode: c.recurrenceMode || "calendar" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2738,28 +2525,31 @@
     if(!target){ target={ id:Date.now() }; S.chores.push(target); }
     var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
     target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort;
-    // Assignment mode is one of: pick (default) / pinned (Fixed) / rotate.
-    // Mutually exclusive — pinned and rotate can't both be true on a single
-    // chore. UI guards this; commitDraft enforces it as a safety net.
-    target.pinned = !!d.pinned && !d.rotate;
-    if(d.rotate && !d.pinned) target.rotate = true; else delete target.rotate;
+    // Assignment: when a person is set, exactly one of Alternate (rotate) /
+    // Fixed (pinned) holds. No person = Anyone, neither flag.
+    if(d.assignee === 0 || d.assignee === 1){
+      if(d.rotate){ target.rotate = true; target.pinned = false; }
+      else { target.pinned = true; delete target.rotate; }
+    } else {
+      target.pinned = false; delete target.rotate;
+    }
     var notes = (d.notes || "").trim();
     if(notes) target.notes = notes; else delete target.notes;
-    if(d.freq === "Biweekly" || d.freq === "Monthly"){
-      target.recurrenceMode = d.recurrenceMode || "afterCompletion";
-    } else {
-      delete target.recurrenceMode;
-    }
-    // Templates store cadence only — no day/anchor. Whatever lingered from the
-    // old shape gets cleared on every save, so chore docs stay clean.
-    delete target.weekdays; delete target.startDate; delete target.dayOfMonth; delete target.linkedAfter; delete target.schedule;
+    delete target.dayOfMonth; delete target.schedule; delete target.timesPerWeek; delete target.linkedAfter;
     if(d.linkedAfter && d.linkedAfter.taskId && d.linkedAfter.taskId !== target.id){
+      // Linked: the series comes from the parent — own schedule fields unused.
       target.linkedAfter = { taskId: d.linkedAfter.taskId, days: Math.max(1, d.linkedAfter.days || 1) };
-      delete target.timesPerWeek;
+      delete target.weekdays; delete target.startDate; delete target.recurrenceMode;
     } else if(d.freq === "Weekly"){
-      target.timesPerWeek = Math.max(1, Math.min(7, d.timesPerWeek || 1));
-    } else {
-      delete target.timesPerWeek;
+      target.weekdays = (d.weekdays && d.weekdays.length) ? d.weekdays.slice() : [TODAY.getDay()];
+      delete target.startDate; delete target.recurrenceMode;
+    } else if(d.freq === "Daily"){
+      target.startDate = d.startDate || ymd(TODAY);
+      delete target.weekdays; delete target.recurrenceMode;
+    } else { // Biweekly / Monthly
+      target.startDate = d.startDate || ymd(TODAY);
+      target.recurrenceMode = d.recurrenceMode || "calendar";
+      delete target.weekdays;
     }
     // When you edit the template, propagate the new default assignee/lock to upcoming
     // non-done occurrences so the change is visible immediately. Past + done are left
@@ -2774,21 +2564,20 @@
   }
   function propagateTemplateChanges(c){
     if(!S.occurrences) return;
-    // Walk every upcoming non-pinned, non-done occurrence for this chore in
-    // the next 2 weeks and refresh its assignee to the new template default.
-    // Pinned occurrences (anything you assigned in the planner) are intent
-    // expressed on a specific date — leave them alone.
+    // Refresh future undone occurrences to match the new assignment config.
+    // Fixed → everyone becomes c.assignee. Anyone → null. Alternate is left
+    // alone — the existing alternation pattern stays valid whoever started.
+    if(c.rotate) return;
+    var to = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
     var fromStr = ymd(TODAY);
-    var toStr = ymd(addDays(TODAY, 14));
     var idStr = String(c.id);
     Object.keys(S.occurrences).forEach(function(key){
       var under = key.indexOf("_"); if(under < 0) return;
       if(key.slice(0, under) !== idStr) return;
-      var dStr = key.slice(under + 1);
-      if(dStr < fromStr || dStr > toStr) return;
+      if(key.slice(under + 1) < fromStr) return;
       var o = S.occurrences[key];
-      if(!o || o.done || o.pinned || o.tombstone) return;
-      o.assignee = c.assignee;
+      if(!o || o.done || o.tombstone) return;
+      o.assignee = to;
     });
   }
   function closeAdd(){ editingId=null; draftOriginal=null; S.modal=null; render(); }
@@ -2823,24 +2612,27 @@
       style:(d.effort===e?"border-color:"+DIFF[e].color+";color:"+DIFF[e].color+";background:var(--surface)":""),
       onClick:function(){ d.effort=e; render(); }, text:DIFF[e].label})); });
     var assignSeg=h("div",{class:"seg"});
-    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; if(p==null){ d.pinned=false; d.rotate=false; } render(); }, text:(p==null?"Nobody":S.names[p])})); });
-    // Assignment-mode picker — three exclusive modes. Pick = planner asks
-    // each time (current default), Fixed = always c.assignee, Rotate =
-    // alternates each new occurrence (looks at the most recent past
-    // assignment and flips). Only meaningful when an assignee is set.
+    [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){
+      d.assignee=p;
+      if(p==null){ d.pinned=false; d.rotate=false; }
+      else if(!d.pinned && !d.rotate){ d.rotate=true; } // Alternate is the default once a person enters the picture
+      render();
+    }, text:(p==null?"Nobody":S.names[p])})); });
+    // Assignment-mode picker — Alternate takes turns automatically every
+    // occurrence; Fixed always uses the chosen person. Only shown when an
+    // assignee is set ('Nobody' = every occurrence is Anyone).
     var modeBtns = h("div",{class:"seg"});
     var modes = [
-      ["pick",   "🎲 Pick",  "Planner asks each occurrence"],
-      ["fixed",  "🔒 Fixed", "Always " + (d.assignee != null ? S.names[d.assignee] : "this person")],
-      ["rotate", "↻ Rotate", "Alternates Nico ↔ Caro automatically"]
+      ["rotate", "↻ Alternate", "Takes turns — " + S.names[0] + " ↔ " + S.names[1] + " each time"],
+      ["fixed",  "🔒 Fixed",    "Always " + (d.assignee != null ? S.names[d.assignee] : "this person")]
     ];
-    var currentMode = d.pinned ? "fixed" : d.rotate ? "rotate" : "pick";
+    var currentMode = d.rotate ? "rotate" : "fixed";
     modes.forEach(function(m){
       modeBtns.appendChild(h("button",{
         class: (currentMode === m[0] ? "on" : ""),
         onClick: function(){
-          d.pinned = (m[0] === "fixed");
           d.rotate = (m[0] === "rotate");
+          d.pinned = (m[0] === "fixed");
           render();
         },
         text: m[1]
@@ -2895,35 +2687,72 @@
       modalBody.push(field("Days after", daysIn));
     } else {
       modalBody.push(field("Frequency", freqSeg));
-      if(d.freq==="Weekly"){
-        // Times per week — 1, 2, 3. Default 1. Schedule (which days) lives
-        // in the Planning sheet now; the template just declares how often.
-        var countSeg=h("div",{class:"seg"});
-        [1,2,3].forEach(function(n){
-          countSeg.appendChild(h("button",{class:(d.timesPerWeek===n?"on":""),
-            onClick:function(){ d.timesPerWeek=n; render(); },
-            text: n + "× / week"}));
-        });
-        modalBody.push(field("How many times a week", countSeg));
+      if(d.freq==="Daily"){
+        modalBody.push(h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 4px 8px;line-height:1.4;",
+          text:"Shows up every day, starting " + (d.startDate ? "from its start date" : "today") + "."}));
       }
-      // Recurrence mode — only relevant for cycle-style cadences. 'After
-      // completion' walks the cycle forward from when you actually marked
-      // it done; 'On a schedule' is the existing planner-places-it model.
-      // Daily/Weekly default to calendar; Biweekly/Monthly default to
-      // after-completion (the whole reason the toggle exists).
+      if(d.freq==="Weekly"){
+        // Which weekdays — tap to toggle. The series repeats on these days
+        // every week; per-occurrence moves happen on the cards afterwards.
+        var dp=h("div",{class:"daypick"});
+        MON_FIRST.forEach(function(dow){
+          dp.appendChild(h("button",{class:(d.weekdays.indexOf(dow)>=0?"on":""),
+            onClick:function(){ var k=d.weekdays.indexOf(dow); if(k>=0)d.weekdays.splice(k,1); else d.weekdays.push(dow); render(); }, text:DOW_SHORT[dow]}));
+        });
+        modalBody.push(field("Which days", dp));
+      }
       if(d.freq === "Biweekly" || d.freq === "Monthly"){
+        // Start-date calendar: pick the first day of the cycle. The series
+        // then repeats every 14 / 28 days from that date.
+        var stepDays = d.freq === "Biweekly" ? 14 : 28;
+        var selDate = parseYmd(d.startDate);
+        var base = editorCalBase || new Date((selDate||TODAY).getFullYear(), (selDate||TODAY).getMonth(), 1);
+        var calWrap = h("div",{style:"border:1.5px solid var(--border);border-radius:11px;padding:10px;background:var(--input-bg);"});
+        calWrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"},
+          h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+            onClick:function(){ editorCalBase = new Date(base.getFullYear(), base.getMonth()-1, 1); render(); }, text:"‹"}),
+          h("div",{style:"font-weight:800;font-size:13.5px;", text:MONTHS[base.getMonth()]+" "+base.getFullYear()}),
+          h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+            onClick:function(){ editorCalBase = new Date(base.getFullYear(), base.getMonth()+1, 1); render(); }, text:"›"})
+        ));
+        var head=h("div",{class:"month-head"});
+        ["M","T","W","T","F","S","S"].forEach(function(x){ head.appendChild(h("div",{text:x})); });
+        calWrap.appendChild(head);
+        var grid=h("div",{class:"month-grid"});
+        var lead=(base.getDay()+6)%7;
+        var gridStart=addDays(base,-lead);
+        for(var gi=0; gi<42; gi++){
+          (function(){
+            var day=addDays(gridStart,gi);
+            var out=day.getMonth()!==base.getMonth();
+            var past=day<TODAY;
+            var isSel=selDate && sameDay(day,selDate);
+            grid.appendChild(h("div",{
+              class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
+              style: past&&!out ? "opacity:0.35;" : "",
+              onClick: (out||past) ? null : function(){ d.startDate=ymd(day); render(); }
+            }, h("div",{class:"d",text:String(day.getDate())})));
+          })();
+        }
+        calWrap.appendChild(grid);
+        modalBody.push(field("First day" + (d.startDate ? "" : " — pick one"), calWrap));
+        modalBody.push(h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 4px 8px;line-height:1.4;",
+          text: d.startDate
+            ? "Repeats every " + stepDays + " days from " + d.startDate + "."
+            : "The task stays off the board until you pick its first day."}));
+        // Repeat mode: fixed cycle (default — predictable rhythm) vs after
+        // completion (next one counts from when you actually mark it done).
         var modeSeg=h("div",{class:"seg"});
-        var currentMode = d.recurrenceMode || "afterCompletion";
-        [["afterCompletion","After I mark done"],["calendar","On a fixed cycle"]].forEach(function(pair){
-          modeSeg.appendChild(h("button",{class:(currentMode===pair[0]?"on":""),
+        var rMode = d.recurrenceMode || "calendar";
+        [["calendar","On set dates"],["afterCompletion","After I mark done"]].forEach(function(pair){
+          modeSeg.appendChild(h("button",{class:(rMode===pair[0]?"on":""),
             onClick:function(){ d.recurrenceMode=pair[0]; render(); },
             text: pair[1]}));
         });
         modalBody.push(field("Repeat", modeSeg));
-        if(currentMode === "afterCompletion"){
-          var n = d.freq === "Biweekly" ? 14 : (d.afterCompletionDays || 28);
+        if(rMode === "afterCompletion"){
           modalBody.push(h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 4px 8px;line-height:1.4;",
-            text:"Marking it done schedules the next one " + n + " days later — keeps the rhythm walking with you instead of nagging a fixed calendar day."}));
+            text:"Marking it done schedules the next one " + stepDays + " days later — the rhythm walks with you instead of a fixed calendar day."}));
         }
       }
     }
@@ -3079,8 +2908,8 @@
     children.push(
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Schedule"}),
-      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:clearAllOccurrences, text:"Start fresh — clear all occurrences" }),
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Empties the board: every assignment, lock, and skip disappears. Your chore list, history, Purrs, and badges stay."})
+      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:clearAllOccurrences, text:"Start fresh — unschedule everything" }),
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Empties the board and clears every task's days. Tasks stay in your list; open each one to schedule it again. History, Purrs, and badges stay."})
     );
 
     // Wipe progress — clears all earned/historical data but keeps chores.
@@ -3302,38 +3131,6 @@
   }
   function viewTasks(){
     var wrap=h("div",{class:"content"});
-    // 🔀 Plan-the-month chips at the top. "Plan next month" appears once
-    // this month is fully assigned (every non-done pending row has a person).
-    var thisMonth = planMonthWorkload(0);
-    var monthFull = (function(){
-      for(var w=0; w<thisMonth.weeks.length; w++){
-        var rows = thisMonth.weeks[w].rows;
-        for(var i=0;i<rows.length;i++){
-          var r = rows[i];
-          if(r.allDone || r.mixed) continue;
-          if(r.scheduledCount === 0) continue;
-          if(r.assignee === 0 || r.assignee === 1) continue;
-          return false;
-        }
-      }
-      return thisMonth.weeks.length > 0;
-    })();
-    var thisLabel = "Plan " + MONTHS[thisMonth.mFirst.getMonth()].slice(0,3);
-    var nextLabel = (function(){
-      var nFirst = new Date(thisMonth.mFirst.getFullYear(), thisMonth.mFirst.getMonth()+1, 1);
-      return "Plan " + MONTHS[nFirst.getMonth()].slice(0,3);
-    })();
-    var chipsRow = h("div",{style:"display:flex;gap:8px;margin:0 0 14px;"});
-    function planChip(off, label, primary){
-      return h("button",{
-        style:"flex:1;padding:10px 12px;border:none;border-radius:13px;background:"+(primary?"linear-gradient(135deg,var(--accent1),var(--accent2))":"var(--soft-accent)")+";color:"+(primary?"#fff":"var(--soft-accent-text)")+";font:inherit;font-weight:800;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;",
-        onClick:function(){ openPlanMonth(off); },
-        text:"🔀 "+label
-      });
-    }
-    chipsRow.appendChild(planChip(0, thisLabel, true));
-    if(monthFull) chipsRow.appendChild(planChip(1, nextLabel, false));
-    wrap.appendChild(chipsRow);
     var list=S.chores.filter(function(c){ return S.filterPerson===null || c.assignee===S.filterPerson; });
     wrap.appendChild(h("div",{class:"section-title", text:"All tasks ("+list.length+")"}));
     if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Tap + to add a task")); }
@@ -3459,7 +3256,6 @@
     if(S.modal==="reward") root.appendChild(modalReward());
     if(S.modal==="badge") root.appendChild(modalBadge());
     if(S.modal==="occurrence") root.appendChild(modalOccurrence());
-    if(S.modal==="planMonth") root.appendChild(modalPlanMonth());
     document.body.classList.toggle("modal-open", !!S.modal); // lock page scroll behind sheets
     // Restore scroll positions on the fresh DOM. Done synchronously so the
     // user doesn't see a flash at the top before snapping back.
