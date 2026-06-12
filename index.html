@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v117";
+  var APP_VERSION = "v118";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1360,21 +1360,6 @@
   }
 
   // Wipes every unlocked badge + the personal-best streaks, and sets today as the
-  // new baseline so computeBadgeStats / computeStreak ignore everything older.
-  function resetBadgeProgress(){
-    if(!confirm("Reset all badge progress? Anything completed before this moment is wiped from the count — only new activity earns badges. Purrs balance and reward catalog are not affected.")) return;
-    S.badges = {};
-    S.maxStreaks = [0, 0];
-    S.badgeBaselineDate = ymd(TODAY);
-    S.badgeBaselineAt   = new Date().toISOString();
-    S.badgeBaselineBalances = [S.balances[0]||0, S.balances[1]||0];
-    S.rumMilestonesHit = { "0": [], "1": [] };
-    invalidateBadgeStats(); // baseline moved → rebuild from scratch
-    save();
-    render();
-    alert("Done. Badges reset.");
-  }
-
   // Wipes everything that represents EARNED progress: doneLog history, Purrs
   // balances, redemption ledger, unlocked badges, max-streak personal bests,
   // and badge baselines. Also un-marks any done occurrences so the calendar
@@ -2407,7 +2392,7 @@
   // Rum fires once per person each time their balance first crosses one of
   // these milestones. Crossed milestones are persisted so undo+redo doesn't
   // double-fire and so the popup doesn't repeat after a sync from another
-  // device. resetBadgeProgress / wipeAllProgress clear the hit set.
+  // device. wipeAllProgress clears the hit set.
   var RUM_MILESTONES = [10, 25, 50, 100, 250, 500, 1000];
   function checkRumMilestones(personIdx){
     if(personIdx !== 0 && personIdx !== 1) return;
@@ -2963,28 +2948,27 @@
         weeklyRow
       );
     }
-    // Badges sub-section (everyone's phone) — reset is a hard local action.
+    // Reset zone — two clearly-different actions, no overlap. 'Reset badge
+    // progress' is gone (Wipe earnings does it as a strict superset).
+    function resetBtn(label, hint, onClick){
+      return h("div",{style:"margin-bottom:12px;"},
+        h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:onClick, text:label }),
+        h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:hint})
+      );
+    }
     children.push(
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
-      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Badges"}),
-      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:resetBadgeProgress, text:"Reset badge progress" }),
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Clears every unlocked badge and resets the streak personal-best. Purrs and rewards are untouched."})
-    );
-
-    // Start fresh — wipes per-occurrence data but keeps templates / history.
-    children.push(
-      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
-      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Schedule"}),
-      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:clearAllOccurrences, text:"Start fresh — unschedule everything" }),
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Empties the board and clears every task's days. Tasks stay in your list; open each one to schedule it again. History, Purrs, and badges stay."})
-    );
-
-    // Wipe progress — clears all earned/historical data but keeps chores.
-    children.push(
-      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
-      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Progress"}),
-      h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--danger-border);border-radius:11px;background:var(--surface);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;", onClick:wipeAllProgress, text:"Wipe all progress" }),
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Resets completion history, Purrs balance, badges, streaks, and redemptions to zero. Chore list and current plan stay."})
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Reset"}),
+      resetBtn(
+        "Unschedule all tasks",
+        "Empties the board and clears every task's days. Tasks stay in your list; open each one to set its days again. Purrs, badges, and history stay.",
+        clearAllOccurrences
+      ),
+      resetBtn(
+        "Reset earnings",
+        "Wipes completion history, Purrs balance, badges, streaks, and redemptions to zero. Tasks and their schedules stay.",
+        wipeAllProgress
+      )
     );
 
     children.push(
