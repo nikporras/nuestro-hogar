@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v119";
+  var APP_VERSION = "v120";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1513,6 +1513,28 @@
       var dStr = key.slice(dash + 1);
       if(dStr < fromStr || dStr > toStr) return;
       t[o.assignee]++;
+    });
+    return t;
+  }
+  // Per-chore monthly split — total occurrences this month per person
+  // (counts done + undone, ignores tombstones). Used by the editor as a
+  // small receipt showing where the chore's occurrences actually land,
+  // independent of the template's default-assignee chip.
+  function choreMonthlyByPerson(c){
+    var t = [0, 0];
+    if(!S.occurrences) return t;
+    var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth(), 1);
+    var mLast  = new Date(TODAY.getFullYear(), TODAY.getMonth()+1, 0);
+    var fromStr = ymd(mFirst), toStr = ymd(mLast);
+    var idStr = String(c.id);
+    Object.keys(S.occurrences).forEach(function(key){
+      var o = S.occurrences[key];
+      if(!o || o.tombstone) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var dStr = key.slice(dash + 1);
+      if(dStr < fromStr || dStr > toStr) return;
+      if(o.assignee === 0 || o.assignee === 1) t[o.assignee]++;
     });
     return t;
   }
@@ -2811,6 +2833,20 @@
     modalBody.push(field("Difficulty", diffSeg));
     modalBody.push(field("Assigned to", assignSeg));
     if(d.assignee!=null) modalBody.push(field("Assignment", h("div",{}, modeBtns, modeHint)));
+    // Per-chore monthly split — eyeballable receipt for "where do this
+    // chore's occurrences actually land?". Catches cases where the chip
+    // says one person but the actual occurrences are landing on the other
+    // (especially common when you switch a chore from Fixed to Alternate
+    // mid-month and old occurrences hold their assignment).
+    if(editingId){
+      var existingMo = findChore(editingId);
+      if(existingMo){
+        var mo = choreMonthlyByPerson(existingMo);
+        var monLbl = MONTHS[TODAY.getMonth()];
+        modalBody.push(h("div",{style:"font-size:11.5px;color:var(--muted);margin:-4px 4px 6px;text-align:center;font-weight:600;",
+          text: "This month ("+monLbl+"): "+S.names[0]+" "+mo[0]+" · "+S.names[1]+" "+mo[1] + (mo[0]+mo[1]===0 ? " — none scheduled yet" : "")}));
+      }
+    }
     // Read-only "Used this week" — the recurring definition stays clean, but
     // we still show where this chore landed this week so you can hop into the
     // Occurrence sheet to edit just that date. Editing existing chores only.
@@ -3163,7 +3199,7 @@
       h("div",{class:"card-tags"},
         freqTag,
         h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-        h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
+        h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:(c.assignee==null?"":(c.pinned?"🔒 ":c.rotate?"↻ ":""))+pName(c.assignee)})
       ),
       h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
         h("span",{text:"📆"}), h("span",{text:when}))
