@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v120";
+  var APP_VERSION = "v121";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -669,13 +669,21 @@
   // one at parent date + N. Child assignee defaults to the child template's
   // own person (wash · Nico can pair with fold · Caro).
   function cascadeAddAfter(parentChoreId, parentDate){
+    // Bias fix: the child inherits the PARENT occurrence's assignee — whoever
+    // washes also folds. Falls back to the child template's own assignee when
+    // the parent has none (Anyone), then to null. Previously the cascade
+    // always used the child template's default, which permanently tilted the
+    // monthly split toward whichever person owned the linked chore.
+    var parentOcc = S.occurrences[occKey(parentChoreId, parentDate)];
+    var parentAssignee = (parentOcc && (parentOcc.assignee === 0 || parentOcc.assignee === 1)) ? parentOcc.assignee : null;
     S.chores.forEach(function(c){
       if(!c.linkedAfter || c.linkedAfter.taskId !== parentChoreId) return;
       var d = addDays(parentDate, c.linkedAfter.days || 1);
       var key = occKey(c.id, d);
       var existing = S.occurrences[key];
       if(existing && !existing.tombstone) return;
-      var who = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+      var who = parentAssignee != null ? parentAssignee
+              : (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
       S.occurrences[key] = { assignee: who, done: false, doneAt: null, pinned: true };
     });
   }
@@ -766,11 +774,13 @@
         if(!po || po.tombstone) delete S.occurrences[key];
       });
     });
-    // 2) backfill — every live parent occurrence gets a child at +N.
+    // 2) backfill — every live parent occurrence gets a child at +N. The
+    // child's assignee inherits from the PARENT occurrence so the pairing
+    // stays coherent (same person washes and folds).
     children.forEach(function(c){
       var n = c.linkedAfter.days || 1;
       var parentIdStr = String(c.linkedAfter.taskId);
-      var defaultAssignee = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+      var fallback = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
       Object.keys(S.occurrences).forEach(function(key){
         var dash = key.indexOf("_"); if(dash < 0) return;
         if(key.slice(0, dash) !== parentIdStr) return;
@@ -781,9 +791,86 @@
         var pd = new Date(+sp[0], (+sp[1])-1, +sp[2]);
         var childKey = occKey(c.id, addDays(pd, n));
         if(S.occurrences[childKey]) return;
-        S.occurrences[childKey] = { assignee: defaultAssignee, done: false, doneAt: null, pinned: true };
+        var who = (po.assignee === 0 || po.assignee === 1) ? po.assignee : fallback;
+        S.occurrences[childKey] = { assignee: who, done: false, doneAt: null, pinned: true };
       });
     });
+  }
+  // ---------- monthly rebalance ----------
+  // The series generator places per-chore alternation cleanly, but global
+  // totals can still drift — different chores have different occurrence
+  // counts (a Mon+Thu weekly is 9/month, a biweekly is 2/month), and fixed
+  // chores tilt the total whichever way they're locked. This pass scans
+  // one month at a time and flips the minimum number of Alternate-mode
+  // occurrences from the heavier person to the lighter one until they're
+  // within 1 of each other. Each flipped occurrence is marked balanced:true
+  // so cards can show a small ↔ glyph explaining why this Mon's trash
+  // landed on you instead of the alternation rhythm.
+  function balanceMonth(monthStart, monthEnd){
+    var fromStr = ymd(monthStart), toStr = ymd(monthEnd);
+    var byChore = {};
+    S.chores.forEach(function(c){ byChore[String(c.id)] = c; });
+    var swapped = 0;
+    for(var pass = 0; pass < 50; pass++){
+      var counts = [0, 0];
+      var items = [];
+      Object.keys(S.occurrences).forEach(function(key){
+        var o = S.occurrences[key];
+        if(!o || o.tombstone || o.done) return;
+        var dash = key.indexOf("_"); if(dash < 0) return;
+        var dStr = key.slice(dash + 1);
+        if(dStr < fromStr || dStr > toStr) return;
+        if(o.assignee === 0 || o.assignee === 1) counts[o.assignee]++;
+        items.push({ o: o, chId: key.slice(0, dash), dStr: dStr });
+      });
+      var diff = counts[0] - counts[1];
+      if(Math.abs(diff) <= 1) break;
+      var heavy = diff > 0 ? 0 : 1;
+      // Candidates: Alternate chores assigned to the heavy person, not
+      // linked-after children (those cascade from parents — flip the parent
+      // instead so the pair moves together). Prefer earlier-in-the-month
+      // dates so swaps cluster near where the imbalance is forming.
+      var pick = null;
+      items.forEach(function(item){
+        if(item.o.assignee !== heavy) return;
+        var c = byChore[item.chId];
+        if(!c) return;
+        if(c.pinned) return;             // Fixed mode — locked, can't swap
+        if(!c.rotate) return;            // Anyone-mode chores don't participate
+        if(c.linkedAfter && c.linkedAfter.taskId) return; // child — parent flip handles it
+        if(!pick || item.dStr < pick.dStr) pick = item;
+      });
+      if(!pick) break; // nothing flippable; we're as balanced as we can get
+      var newWho = 1 - heavy;
+      pick.o.assignee = newWho;
+      pick.o.balanced = true;
+      swapped++;
+      // Cascade the flip onto linked children that mirror this date.
+      var sp = pick.dStr.split("-");
+      var pd = new Date(+sp[0], (+sp[1])-1, +sp[2]);
+      var parentId = parseInt(pick.chId, 10);
+      S.chores.forEach(function(c){
+        if(!c.linkedAfter || c.linkedAfter.taskId !== parentId) return;
+        var cd = addDays(pd, c.linkedAfter.days || 1);
+        var ck = occKey(c.id, cd);
+        var co = S.occurrences[ck];
+        if(co && !co.done && !co.tombstone){
+          co.assignee = newWho;
+          co.balanced = true;
+        }
+      });
+    }
+    return swapped;
+  }
+  // Manual + automatic entry point: balance the current month + the next.
+  function balanceUpcoming(){
+    var total = 0;
+    for(var i = 0; i <= 1; i++){
+      var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth()+i, 1);
+      var mLast  = new Date(TODAY.getFullYear(), TODAY.getMonth()+i+1, 0);
+      total += balanceMonth(mFirst, mLast);
+    }
+    return total;
   }
 
   // Tombstones outside the rolling materialisation window do no work — sweep them
@@ -1598,6 +1685,9 @@
     var done = isDone(ch, date);
     var eff  = effortOf(ch);
     var who  = occAssignee(ch, date);
+    // ↔ marks an occurrence that the monthly rebalance pass swapped from
+    // the natural alternation rhythm to even out the month total.
+    var swapped = (function(){ var o = occ(ch, date); return !!(o && o.balanced); })();
     // 🔒 on the card means "this chore is Fixed to a person" — a template
     // fact. (Occurrence-level pinned stopped meaning anything once every
     // generated record carried it.)
@@ -1613,7 +1703,7 @@
         h("div",{class:"card-tags"},
           h("span",{class:"tag", style:"background:"+FC[ch.freq], text:ch.freq}),
           h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
-          h("span",{class:"tag person", style:"background:"+pColor(who), text:pName(who), onClick:openSheet})
+          h("span",{class:"tag person", style:"background:"+pColor(who), text:(swapped?"↔ ":"")+pName(who), onClick:openSheet})
         )
       )
     ];
@@ -1666,6 +1756,7 @@
     var prev = o.assignee;
     if(prev === to) return;
     o.assignee = to;
+    delete o.balanced; // user override → no longer a rebalance swap
     // Mirror the rebalance the old tap-cycle did: done occurrences need to
     // swing their points to the new owner without going negative.
     if(o.done){
@@ -2020,7 +2111,16 @@
     wrap.appendChild(h("div",{class:"section-title", text:"Workload split"}));
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
-      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Tasks left this month")
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Tasks left this month"),
+      h("button",{
+        style:"border:1.5px solid var(--accent2);background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12px;padding:5px 11px;border-radius:14px;cursor:pointer;",
+        onClick:function(){
+          var n = balanceUpcoming();
+          save(); render();
+          alert(n === 0 ? "Already as even as it can get." : "Rebalanced — " + n + " task" + (n===1?"":"s") + " moved between you to even out the month.");
+        },
+        text:"↔ Rebalance"
+      })
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
