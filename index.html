@@ -110,8 +110,6 @@
   .tag.person{cursor:pointer;}
 
   /* Week strip */
-  .week-strip{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;margin-bottom:6px;}
-  .day-pill{
     flex:1;min-width:44px;background:var(--surface);border-radius:14px;padding:9px 4px;text-align:center;
     cursor:pointer;box-shadow:var(--shadow);border:2px solid transparent;
   }
@@ -232,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v114";
+  var APP_VERSION = "v115";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -396,8 +394,6 @@
     holidayMode: load("nh_holidayMode", false),
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
-    selectedWeekDay: TODAY.getDay(),
-    weekOffset: 0,
     dayOffset: 0,
     monthOffset: 0,
     monthSelected: null,
@@ -1911,45 +1907,6 @@
   // Round arrow button used for week/month navigation.
   function navBtn(label, onClick){ return h("button",{ style:"border:none;background:var(--surface);color:var(--accent2);font-size:22px;font-weight:700;width:38px;height:38px;border-radius:50%;box-shadow:var(--shadow);cursor:pointer;line-height:1;flex-shrink:0;", onClick:onClick, text:label }); }
 
-  function viewWeek(){
-    var wrap=h("div",{class:"content"});
-    var wk=addDays(startOfWeek(TODAY), S.weekOffset*7);
-    var wkEnd=addDays(wk,6);
-    var label = S.weekOffset===0 ? "This week" : (S.weekOffset===1 ? "Next week" : (S.weekOffset===-1 ? "Last week" :
-                MONTHS[wk.getMonth()].slice(0,3)+" "+wk.getDate()+" – "+MONTHS[wkEnd.getMonth()].slice(0,3)+" "+wkEnd.getDate()));
-    wrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin:2px 4px 12px;"},
-      navBtn("‹", function(){ S.weekOffset--; render(); }),
-      h("div",{style:"font-weight:700;font-size:14px;text-align:center;"}, label,
-        S.weekOffset!==0 ? h("div",{style:"font-size:11px;color:var(--accent2);font-weight:700;margin-top:2px;cursor:pointer;", text:"Back to this week", onClick:function(){ S.weekOffset=0; render(); }}) : null),
-      navBtn("›", function(){ S.weekOffset++; render(); })
-    ));
-    var strip=h("div",{class:"week-strip"});
-    for(var i=0;i<7;i++){
-      (function(i){
-        var day=addDays(wk,i);
-        var dow=day.getDay();
-        var future=day>TODAY;
-        var due=choresForDay(day);
-        var doneCount=due.filter(function(c){return isDone(c,day);}).length;
-        var pill=h("div",{class:"day-pill"+(dow===S.selectedWeekDay?" active":"")+(future?" future":"")+(sameDay(day,TODAY)?" today-ring":""),
-          onClick:function(){ S.selectedWeekDay=dow; render(); }},
-          h("div",{class:"dow",text:DOW_SHORT[dow]}),
-          h("div",{class:"num",text:String(day.getDate())}),
-          h("div",{class:"dot"+(due.length?"":" empty")})
-        );
-        if(due.length){ pill.appendChild(h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:3px;",text:doneCount+"/"+due.length})); }
-        strip.appendChild(pill);
-      })(i);
-    }
-    wrap.appendChild(strip);
-    var sel=addDays(wk, (S.selectedWeekDay+6)%7);
-    wrap.appendChild(h("div",{class:"section-title", text:DOW_SHORT[sel.getDay()]+" "+sel.getDate()+" "+MONTHS[sel.getMonth()]}));
-    var list=choresForDay(sel);
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"☕"}), "Day off")); }
-    else list.forEach(function(c){ wrap.appendChild(choreCard(c,sel)); });
-    return wrap;
-  }
-
   function viewMonth(){
     var wrap=h("div",{class:"content"});
     var mFirst=new Date(TODAY.getFullYear(), TODAY.getMonth()+S.monthOffset, 1);
@@ -2009,7 +1966,7 @@
     } else {
       wrap.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:12px;margin-top:12px;", text:"Tap a day to see its tasks."}));
     }
-    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:exportICS, text:"📅 Send to calendar" }));
+    wrap.appendChild(h("button",{ style:"margin:18px auto 0;display:block;border:none;background:var(--surface);color:var(--accent2);font:inherit;font-weight:700;font-size:13px;padding:11px 20px;border-radius:22px;box-shadow:var(--shadow);cursor:pointer;", onClick:function(){ downloadICS(null); }, text:"📅 Send to calendar" }));
     wrap.appendChild(h("div",{ style:"text-align:center;color:var(--muted);font-size:11px;margin-top:8px;padding:0 24px;", text:"Tasks repeat on the days set in their editor. Move or skip any single day by tapping its card."}));
     return wrap;
   }
@@ -2792,7 +2749,7 @@
     ];
 
     // Holiday mode — global pause: hides every upcoming chore card on
-    // Today / Week / Month so the household goes quiet without losing the
+    // Today and Month so the household goes quiet without losing the
     // plan. Toggle to resume.
     var holidayOn = !!S.holidayMode;
     var holidayBtn = h("button",{
@@ -2807,7 +2764,7 @@
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Holiday"}),
       holidayBtn,
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"Hides every future chore card across Today / Week / Month. Streaks pause; reminders still fire. Resume any time."})
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"Hides every future chore card across Today and Month. Streaks pause; reminders still fire. Resume any time."})
     );
 
     // Notifications — available on every device (each phone grants its own).
@@ -2938,21 +2895,6 @@
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
     }catch(e){ alert("Couldn't export the calendar."); }
-  }
-  function exportICS(){ S.modal="calexport"; render(); }
-  function modalCalExport(){
-    function pick(label, color, fn){
-      return h("button",{class:"btn primary", style:"width:100%;margin-top:10px;background:"+color+";color:#fff;border:none;",
-        onClick:function(){ S.modal=null; render(); fn(); }, text:label});
-    }
-    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; render(); } }},
-      h("div",{class:"modal"}, h("h3",{text:"Export to calendar"}),
-        h("div",{style:"font-size:13px;color:var(--muted);margin-bottom:6px;",text:"Whose tasks should go in the calendar?"}),
-        pick("Both of us", "var(--accent2)", function(){ downloadICS(null); }),
-        pick(S.names[0]+" only", pColor(0), function(){ downloadICS(0); }),
-        pick(S.names[1]+" only", pColor(1), function(){ downloadICS(1); }),
-        h("button",{class:"btn ghost", style:"width:100%;margin-top:12px;", onClick:function(){ S.modal=null; render(); }, text:"Cancel"})
-      ));
   }
 
   // ---------- data backup (export / import) ----------
@@ -3161,7 +3103,7 @@
   }
 
   function nav(){
-    var tabs=[["today","🏠","Today"],["week","📅","Week"],["month","🗓️","Month"],["tasks","📋","Tasks"],["logros","🏆","Stats"]];
+    var tabs=[["today","🏠","Today"],["month","🗓️","Month"],["tasks","📋","Tasks"],["logros","🏆","Stats"]];
     var n=h("div",{class:"nav"});
     tabs.forEach(function(t){
       n.appendChild(h("button",{class:(S.tab===t[0]?"active":""), onClick:function(){ S.tab=t[0]; render(); }},
@@ -3188,17 +3130,15 @@
     root.appendChild(topHud());
     var body;
     if(S.tab==="today") body=viewToday();
-    else if(S.tab==="week") body=viewWeek();
     else if(S.tab==="month") body=viewMonth();
     else if(S.tab==="tasks") body=viewTasks();
     else body=viewLogros();
     root.appendChild(body);
-    if(S.tab==="today"||S.tab==="week"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
+    if(S.tab==="today"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="names") root.appendChild(modalNames());
     if(S.modal==="reminder") root.appendChild(modalReminder());
-    if(S.modal==="calexport") root.appendChild(modalCalExport());
     if(S.modal==="cat") root.appendChild(modalCat());
     if(S.modal==="catPopup") root.appendChild(modalCatPopup());
     if(S.modal==="reward") root.appendChild(modalReward());
