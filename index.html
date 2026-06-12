@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v121";
+  var APP_VERSION = "v122";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -392,6 +392,10 @@
     rumMilestonesHit: load("nh_rumMilestonesHit", { "0": [], "1": [] }),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     holidayMode: load("nh_holidayMode", false),
+    // Default to the current month so existing installs don't fire a silent
+    // rebalance on first load — the user opts in for THIS month via the
+    // explicit button. Future month rollovers will tick this forward.
+    lastBalanceMonth: load("nh_lastBalanceMonth", TODAY.getFullYear() + "-" + String(TODAY.getMonth()+1).padStart(2,"0")),
     deviceUser: load("nh_deviceUser", 0), // which person uses THIS phone (device-local, not synced)
     tab: "today",
     dayOffset: 0,
@@ -432,6 +436,7 @@
     localStorage.setItem("nh_rumMilestonesHit", JSON.stringify(S.rumMilestonesHit || { "0": [], "1": [] }));
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     localStorage.setItem("nh_holidayMode", JSON.stringify(!!S.holidayMode));
+    localStorage.setItem("nh_lastBalanceMonth", JSON.stringify(S.lastBalanceMonth || ""));
   }catch(e){} }
   function save(){
     ensureOccurrences();
@@ -595,9 +600,11 @@
       }
     }
     // 2) generate the recurring series forward, 3) keep linked-after chores
-    //    mirroring their parents, 4) sweep ancient tombstones.
+    //    mirroring their parents, 4) rebalance silently on month rollover,
+    //    5) sweep ancient tombstones.
     materialiseSeries();
     syncAfterChores();
+    maybeMonthRolloverRebalance();
     pruneOldTombstones();
   }
   function parseYmd(s){
@@ -872,6 +879,109 @@
     }
     return total;
   }
+  // Runs balanceUpcoming once when the calendar month rolls over since the
+  // last time it ran. Quiet — no preview, no alert. Deliberate user nudges
+  // earlier in the month are preserved because the balance pass only flips
+  // Alternate-mode occurrences; Fixed and any user-overridden assignees are
+  // left alone (overrides clear o.balanced via setOccAssignee).
+  function maybeMonthRolloverRebalance(){
+    var monthKey = TODAY.getFullYear() + "-" + String(TODAY.getMonth()+1).padStart(2,"0");
+    if(S.lastBalanceMonth === monthKey) return;
+    S.lastBalanceMonth = monthKey;
+    balanceUpcoming();
+  }
+  // ---------- Rebalance preview ----------
+  // The Stats + Tasks Rebalance buttons both open this preview so the user
+  // sees the proposed swaps before they land. Strategy: snapshot the
+  // occurrence map, run balanceUpcoming (mutates), diff, show the list.
+  // Cancel restores from snapshot; Apply just commits.
+  var rebalancePreviewCtx = null;
+  function openRebalancePreview(){
+    var snap = {};
+    Object.keys(S.occurrences).forEach(function(k){
+      var o = S.occurrences[k];
+      snap[k] = { assignee: o ? o.assignee : null, balanced: o ? !!o.balanced : false };
+    });
+    var n = balanceUpcoming();
+    if(n === 0){
+      alert("Already as even as it can get for this month and next.");
+      return;
+    }
+    var swaps = [];
+    Object.keys(S.occurrences).forEach(function(key){
+      var before = snap[key]; if(!before) return;
+      var after = S.occurrences[key];
+      if(before.assignee === after.assignee) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var chore = findChore(parseInt(key.slice(0, dash), 10));
+      if(!chore) return;
+      var sp = key.slice(dash + 1).split("-");
+      swaps.push({
+        chore: chore,
+        date: new Date(+sp[0], (+sp[1])-1, +sp[2]),
+        from: before.assignee,
+        to: after.assignee
+      });
+    });
+    swaps.sort(function(a, b){ return a.date - b.date; });
+    rebalancePreviewCtx = { swaps: swaps, snap: snap };
+    S.modal = "rebalance"; render();
+  }
+  function applyRebalance(){
+    save();
+    rebalancePreviewCtx = null;
+    S.modal = null;
+    render();
+  }
+  function cancelRebalance(){
+    if(rebalancePreviewCtx && rebalancePreviewCtx.snap){
+      Object.keys(rebalancePreviewCtx.snap).forEach(function(k){
+        var o = S.occurrences[k];
+        if(!o) return;
+        var before = rebalancePreviewCtx.snap[k];
+        o.assignee = before.assignee;
+        if(before.balanced) o.balanced = true; else delete o.balanced;
+      });
+    }
+    rebalancePreviewCtx = null;
+    S.modal = null;
+    render();
+  }
+  function modalRebalance(){
+    if(!rebalancePreviewCtx) return h("div");
+    var swaps = rebalancePreviewCtx.swaps;
+    var children = [
+      h("h3",{style:"margin:0 0 4px;text-align:center;", text:"Rebalance preview"}),
+      h("div",{style:"color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;",
+        text: swaps.length + " task" + (swaps.length===1?"":"s") + " will move to even out the upcoming months."})
+    ];
+    var list = h("div",{class:"modal-scroll", style:"margin-bottom:8px;"});
+    swaps.forEach(function(s){
+      var dateLbl = DOW_SHORT[s.date.getDay()] + " " + s.date.getDate() + " " + MONTHS[s.date.getMonth()].slice(0,3);
+      list.appendChild(h("div",{style:"padding:9px 11px;margin-bottom:6px;border:1.5px solid var(--border);border-radius:10px;background:var(--input-bg);display:flex;justify-content:space-between;align-items:center;gap:8px;"},
+        h("div",{style:"min-width:0;flex:1;"},
+          h("div",{style:"font-weight:700;font-size:13px;", text:(s.chore.icon||"·") + " " + s.chore.name}),
+          h("div",{style:"font-size:11px;color:var(--muted);font-weight:600;margin-top:2px;", text: dateLbl})
+        ),
+        h("div",{style:"font-size:12px;font-weight:700;white-space:nowrap;text-align:right;"},
+          h("span",{style:"color:"+pColor(s.from)+";opacity:0.65;", text: pName(s.from)}),
+          h("span",{style:"color:var(--muted);margin:0 5px;", text:"→"}),
+          h("span",{style:"color:"+pColor(s.to), text: pName(s.to)})
+        )
+      ));
+    });
+    children.push(list);
+    children.push(h("div",{class:"modal-actions"},
+      h("button",{class:"btn ghost", text:"Cancel", onClick: cancelRebalance}),
+      h("button",{class:"btn primary", text:"Apply", onClick: applyRebalance})
+    ));
+    var topBar = h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{style:"margin:0;font-size:14.5px;text-align:center;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;", text:"↔ Rebalance"}));
+    var sheet = h("div",{class:"modal tall"}, topBar, h("div",{style:"padding:6px 14px 14px;"}, children));
+    attachSwipeClose(topBar, sheet, cancelRebalance);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ cancelRebalance(); } }}, sheet);
+  }
 
   // Tombstones outside the rolling materialisation window do no work — sweep them
   // off the synced doc so old "skip this day" records don't accumulate forever.
@@ -962,7 +1072,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:!!S.holidayMode, rumMilestonesHit:S.rumMilestonesHit }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:!!S.holidayMode, lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -979,6 +1089,7 @@
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
     if(typeof d.holidayMode==="boolean") S.holidayMode=d.holidayMode;
+    if(typeof d.lastBalanceMonth==="string") S.lastBalanceMonth=d.lastBalanceMonth;
     if(d.rumMilestonesHit && typeof d.rumMilestonesHit==="object") S.rumMilestonesHit=d.rumMilestonesHit;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
     // After a pull from a phone still on v1, occurrences may be missing —
@@ -1669,7 +1780,18 @@
   // gentle green, due-ish = amber, very overdue = red. No tint when there's
   // no completion history yet (new chore, can't be 'late' for the first
   // time). Done cards stay neutral — they already say everything visually.
-  function stalenessBorderColor(c){
+  function stalenessBorderColor(c, cardDate){
+    // Rolled-over cards (cardDate strictly before TODAY) get a per-
+    // occurrence shade based on how many days overdue THIS instance is —
+    // a more honest signal than the chore-wide staleness, since rollovers
+    // are by definition late.
+    if(cardDate && cardDate < TODAY){
+      var late = daysBetween(cardDate, TODAY);
+      if(late < 1) return null;
+      if(late < 3) return "#f1c452"; // 1-2 days late → amber
+      if(late < 7) return "#ed8b3a"; // 3-6 days → orange
+      return "#e55353";                // a week or more → red
+    }
     var last = lastDoneDate(c);
     if(!last) return null;
     var interval = expectedIntervalDays(c);
@@ -1694,7 +1816,7 @@
     var lock = !!ch.pinned && (ch.assignee === 0 || ch.assignee === 1);
     var openSheet = function(){ openOccurrence(ch, date); };
     // Staleness tint only on undone cards — done is already a visual story.
-    var stale = done ? null : stalenessBorderColor(ch);
+    var stale = done ? null : stalenessBorderColor(ch, date);
     var children = [
       h("div",{class:"check"+(done?" on":""), onClick:function(e){ e.stopPropagation(); toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:openSheet}),
@@ -2114,11 +2236,7 @@
       h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Tasks left this month"),
       h("button",{
         style:"border:1.5px solid var(--accent2);background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12px;padding:5px 11px;border-radius:14px;cursor:pointer;",
-        onClick:function(){
-          var n = balanceUpcoming();
-          save(); render();
-          alert(n === 0 ? "Already as even as it can get." : "Rebalanced — " + n + " task" + (n===1?"":"s") + " moved between you to even out the month.");
-        },
+        onClick: openRebalancePreview,
         text:"↔ Rebalance"
       })
     ));
@@ -3315,10 +3433,16 @@
     // Quick monthly task split — same number the Stats workload bar shows,
     // surfaced here so you don't have to switch tabs just to glance at it.
     var split = monthlyTaskCounts(null);
-    var splitRow = h("div",{style:"display:flex;justify-content:center;gap:14px;margin:0 0 12px;font-size:12.5px;font-weight:700;"},
+    var splitRow = h("div",{style:"display:flex;justify-content:center;align-items:center;gap:10px;margin:0 0 12px;font-size:12.5px;font-weight:700;"},
       h("span",{style:"color:"+PC[0].c, text:S.names[0]+" "+split[0]+(split[0]===1?" task":" tasks")}),
       h("span",{style:"color:var(--muted);opacity:0.5;", text:"•"}),
-      h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+split[1]+(split[1]===1?" task":" tasks")})
+      h("span",{style:"color:"+PC[1].c, text:S.names[1]+" "+split[1]+(split[1]===1?" task":" tasks")}),
+      h("button",{
+        style:"border:1.5px solid var(--accent2);background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:11.5px;padding:2px 8px;border-radius:11px;cursor:pointer;margin-left:2px;",
+        title:"Rebalance the upcoming months",
+        onClick: openRebalancePreview,
+        text:"↔"
+      })
     );
     wrap.appendChild(splitRow);
     // Archived (done-and-tucked-away) one-time tasks live behind a foldable
@@ -3467,6 +3591,7 @@
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="addChoose") root.appendChild(modalAddChoose());
+    if(S.modal==="rebalance") root.appendChild(modalRebalance());
     if(S.modal==="names") root.appendChild(modalNames());
     if(S.modal==="reminder") root.appendChild(modalReminder());
     if(S.modal==="cat") root.appendChild(modalCat());
