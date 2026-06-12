@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v116";
+  var APP_VERSION = "v117";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -689,6 +689,7 @@
   function materialiseSeries(){
     var horizon = addDays(TODAY, SERIES_HORIZON_DAYS);
     S.chores.forEach(function(c){
+      if(c.kind === "oneTime") return; // commitDraft placed its single card already
       var sch = getSchedule(c);
       if(sch.kind === "after" || sch.kind === "none") return;
       // After-completion cycles self-perpetuate from toggleDone; the
@@ -1000,6 +1001,8 @@
         S.balances[o.assignee] = Math.max(0, (S.balances[o.assignee]||0) - pts);
       }
       o.done = false; o.doneAt = null;
+      // Un-archive a one-time chore so the card comes back into the list.
+      if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
       if(prevAssignee === 0 || prevAssignee === 1){
         // Pass the old doneAt so the cache decrement matches the original
         // applyDoneToStats baseline filter (don't undo something we never counted).
@@ -1009,6 +1012,9 @@
       o.done = true;
       o.doneAt = new Date().toISOString();
       o.pinned = false;
+      // One-time chores tuck themselves away on done so the Tasks tab stays
+      // about 'what I still have'. The occurrence stays for history.
+      if(ch.kind === "oneTime") ch.archived = true;
       if(o.assignee === 0 || o.assignee === 1){
         S.balances[o.assignee] += pts;
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
@@ -1881,6 +1887,7 @@
         // worth nudging about is a chore with no series config at all —
         // no weekdays (weekly) or no start date (the rest). Tap → Tasks.
         var unscheduled = S.chores.filter(function(c){
+          if(c.kind === "oneTime" || c.archived) return false;
           var sch = getSchedule(c);
           if(sch.kind === "after" || sch.kind === "none") return false;
           if(sch.kind === "weekly") return !(c.weekdays && c.weekdays.length);
@@ -2436,19 +2443,58 @@
   function openAdd(){
     editingId=null;
     editorCalBase = null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], startDate:null, effort:2, pinned:false, rotate:true, linkedAfter:null, notes:"", recurrenceMode:"calendar" };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], startDate:null, effort:2, pinned:false, rotate:true, linkedAfter:null, notes:"", recurrenceMode:"calendar", isOneTime:false, oneTimeDate:ymd(TODAY) };
+    draftOriginal=JSON.stringify(draft);
+    S.modal="add"; render();
+  }
+  // One-time tasks are 'do this on a single day' affairs — defrost the
+  // freezer, set up the router. Same chore plumbing (so points, rollover,
+  // notes, the Occurrence sheet all just work), but they never repeat and
+  // they auto-archive when marked done.
+  // Two-button chooser shown when the user taps + on Today/Tasks. Picks the
+  // editor flavour and clears itself in one tap.
+  function modalAddChoose(){
+    var close = function(){ S.modal=null; render(); };
+    function bigBtn(emoji, title, sub, primary, onTap){
+      return h("button",{
+        style:"display:block;width:100%;text-align:left;padding:14px 16px;border:1.5px solid "+(primary?"var(--accent1)":"var(--border)")+";border-radius:13px;background:"+(primary?"linear-gradient(135deg,var(--accent1),var(--accent2))":"var(--input-bg)")+";color:"+(primary?"#fff":"var(--text)")+";font:inherit;cursor:pointer;margin-bottom:8px;",
+        onClick:function(){ S.modal=null; onTap(); }
+      },
+        h("div",{style:"font-weight:800;font-size:14.5px;", text:emoji+"  "+title}),
+        h("div",{style:"font-size:11.5px;opacity:0.85;margin-top:2px;", text:sub})
+      );
+    }
+    var sheet = h("div",{class:"modal"},
+      h("h3",{style:"margin:0 0 6px;text-align:center;", text:"Add a task"}),
+      h("div",{style:"font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px;", text:"What kind?"}),
+      bigBtn("🔁","Recurring task","Repeats on the days you set",true,openAdd),
+      bigBtn("✓","One-time task","A single thing to do, then it's gone",false,openOneTime),
+      h("button",{class:"btn ghost", style:"width:100%;margin-top:6px;", onClick:close, text:"Cancel"})
+    );
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay") close(); }}, sheet);
+  }
+
+  function openOneTime(){
+    editingId=null;
+    editorCalBase=null;
+    draft={ name:"", assignee:null, icon:"", effort:2, notes:"",
+      oneTimeDate: ymd(TODAY), isOneTime:true,
+      freq:"Daily", weekdays:[], startDate:null,
+      pinned:false, rotate:false, linkedAfter:null, recurrenceMode:"calendar" };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
   function openEdit(c){
     editingId=c.id;
     editorCalBase = null;
-    draft={ name:c.name, freq:c.freq, assignee:c.assignee, icon:c.icon||"🧽",
+    var oneTime = (c.kind === "oneTime");
+    draft={ name:c.name, freq:c.freq||"Daily", assignee:c.assignee, icon:c.icon||"🧽",
       weekdays:(c.weekdays || []).slice(), startDate: c.startDate || null,
       effort:effortOf(c), pinned:!!c.pinned, rotate:!!c.rotate,
       linkedAfter: c.linkedAfter ? { taskId:c.linkedAfter.taskId, days:c.linkedAfter.days||1 } : null,
       notes: c.notes || "",
-      recurrenceMode: c.recurrenceMode || "calendar" };
+      recurrenceMode: c.recurrenceMode || "calendar",
+      isOneTime: oneTime, oneTimeDate: oneTime ? (c.startDate || ymd(TODAY)) : ymd(TODAY) };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -2472,6 +2518,32 @@
     var notes = (d.notes || "").trim();
     if(notes) target.notes = notes; else delete target.notes;
     delete target.dayOfMonth; delete target.schedule; delete target.timesPerWeek; delete target.linkedAfter;
+    if(d.isOneTime){
+      // One-time tasks: a single occurrence on the chosen day, no series.
+      // freq stays nominally "Daily" purely so legacy tag-color lookups
+      // don't bomb; the kind flag is what every consumer reads.
+      target.kind = "oneTime";
+      target.freq = "Daily";
+      delete target.weekdays; delete target.recurrenceMode;
+      var when = d.oneTimeDate || ymd(TODAY);
+      target.startDate = when;
+      // Place the single occurrence right now — generator will skip kind:oneTime.
+      var k = occKey(target.id, parseYmd(when));
+      var existing = S.occurrences[k];
+      if(!existing || !existing.done){
+        S.occurrences[k] = {
+          assignee: (target.assignee === 0 || target.assignee === 1) ? target.assignee : null,
+          done: false, doneAt: null, pinned: true
+        };
+      }
+      // New / re-saved one-times come out of the archive even if they were
+      // there from a previous done state.
+      delete target.archived;
+      invalidateBadgeStats();
+      save(); editingId=null; draftOriginal=null; S.modal=null;
+      return true;
+    }
+    delete target.kind;
     if(d.linkedAfter && d.linkedAfter.taskId && d.linkedAfter.taskId !== target.id){
       // Linked: the series comes from the parent — own schedule fields unused.
       target.linkedAfter = { taskId: d.linkedAfter.taskId, days: Math.max(1, d.linkedAfter.days || 1) };
@@ -2584,6 +2656,65 @@
     });
     notesIn.value = d.notes || "";
     var modalBody=[ field("Name", nameIn), field("Emoji (optional)", emojiIn), field("Notes (optional)", notesIn) ];
+    // ---------- One-time editor ----------
+    // Slim version of the editor: name / icon / notes (above), difficulty,
+    // who, single date picker. No frequency, no weekday chips, no recurrence
+    // mode. The save path in commitDraft handles kind:'oneTime'.
+    if(d.isOneTime){
+      modalBody.push(field("Difficulty", diffSeg));
+      modalBody.push(field("Assigned to", assignSeg));
+      // Date picker — same calendar widget used by Biweekly/Monthly start day.
+      var ot = parseYmd(d.oneTimeDate) || TODAY;
+      var otBase = editorCalBase || new Date(ot.getFullYear(), ot.getMonth(), 1);
+      var calWrap = h("div",{style:"border:1.5px solid var(--border);border-radius:11px;padding:10px;background:var(--input-bg);"});
+      calWrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"},
+        h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+          onClick:function(){ editorCalBase = new Date(otBase.getFullYear(), otBase.getMonth()-1, 1); render(); }, text:"‹"}),
+        h("div",{style:"font-weight:800;font-size:13.5px;", text:MONTHS[otBase.getMonth()]+" "+otBase.getFullYear()}),
+        h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+          onClick:function(){ editorCalBase = new Date(otBase.getFullYear(), otBase.getMonth()+1, 1); render(); }, text:"›"})
+      ));
+      var head=h("div",{class:"month-head"});
+      ["M","T","W","T","F","S","S"].forEach(function(x){ head.appendChild(h("div",{text:x})); });
+      calWrap.appendChild(head);
+      var grid=h("div",{class:"month-grid"});
+      var lead=(otBase.getDay()+6)%7;
+      var gridStart=addDays(otBase,-lead);
+      for(var gi=0; gi<42; gi++){
+        (function(){
+          var day=addDays(gridStart,gi);
+          var out=day.getMonth()!==otBase.getMonth();
+          var past=day<TODAY;
+          var isSel=sameDay(day,ot);
+          grid.appendChild(h("div",{
+            class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
+            style: past&&!out ? "opacity:0.35;" : "",
+            onClick: (out||past) ? null : function(){ d.oneTimeDate=ymd(day); render(); }
+          }, h("div",{class:"d",text:String(day.getDate())})));
+        })();
+      }
+      calWrap.appendChild(grid);
+      modalBody.push(field("Do it on", calWrap));
+      modalBody.push(h("div",{class:"modal-actions"},
+        h("button",{class:"btn ghost", text:"Cancel", onClick:closeAdd}),
+        h("button",{class:"btn primary", text:(editingId?"Save":"Add"), onClick:function(){ if(commitDraft()) render(); }})
+      ));
+      if(editingId){
+        modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;",
+          onClick:function(){
+            if(!confirm("Delete \""+(draft.name||"this task")+"\"? This can't be undone.")) return;
+            for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
+            invalidateBadgeStats();
+            save(); editingId=null; draftOriginal=null; S.modal=null; render();
+          }, text:"Delete task" }));
+      }
+      var topBarOT=h("div",{class:"sheet-top"},
+        h("div",{class:"grab"}),
+        h("h3",{text:(editingId?"Edit one-time task":"One-time task")}));
+      var sheetOT=h("div",{class:"modal tall"}, topBarOT, h("div",{class:"modal-scroll"}, modalBody));
+      attachSwipeClose(topBarOT, sheetOT, tryCloseAdd);
+      return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ tryCloseAdd(); } }}, sheetOT);
+    }
     // Linked task toggle + parent / days inputs. When linked, schedule fields are
     // hidden because the schedule is fully derived from the parent.
     var hasLink = !!(d.linkedAfter && d.linkedAfter.taskId);
@@ -3033,34 +3164,72 @@
   // ---------- all tasks tab ----------
   function taskRow(c){
     var eff=effortOf(c);
-    var main=h("div",{class:"card-main"},
-      h("div",{class:"card-name", text:(c.pinned?"🔒 ":"")+c.name}),
+    var oneTime = (c.kind === "oneTime");
+    var freqTag = oneTime
+      ? h("span",{class:"tag", style:"background:#7d6bff", text:"One-time"})
+      : h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq});
+    var when = oneTime && c.startDate
+      ? (function(){ var d = parseYmd(c.startDate); return d
+          ? (sameDay(d, TODAY) ? "Today" : DOW_SHORT[d.getDay()]+" "+d.getDate()+" "+MONTHS[d.getMonth()].slice(0,3))
+          : c.startDate; })()
+      : scheduleLabel(c);
+    var prefix = (c.pinned ? "🔒 " : "") + (c.archived ? "✓ " : "");
+    var main=h("div",{class:"card-main", style:c.archived?"opacity:0.6;":""},
+      h("div",{class:"card-name", text:prefix+c.name}),
       h("div",{class:"card-tags"},
-        h("span",{class:"tag", style:"background:"+FC[c.freq], text:c.freq}),
+        freqTag,
         h("span",{class:"tag", style:"background:"+DIFF[eff].color, text:eff+" pt"}),
         h("span",{class:"tag person", style:"background:"+pColor(c.assignee), text:pName(c.assignee)})
       ),
-      // When does it happen — always shown in the overview.
       h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
-        h("span",{text:"📆"}), h("span",{text:scheduleLabel(c)}))
+        h("span",{text:"📆"}), h("span",{text:when}))
     );
     return h("div",{class:"card", style:"cursor:pointer;align-items:flex-start;", onClick:function(){ openEdit(c); }},
-      h("div",{class:"card-icon", text:c.icon}),
+      h("div",{class:"card-icon", text:c.icon, style:c.archived?"opacity:0.55;":""}),
       main,
       h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
     );
   }
   function viewTasks(){
     var wrap=h("div",{class:"content"});
-    var list=S.chores.filter(function(c){ return S.filterPerson===null || c.assignee===S.filterPerson; });
-    wrap.appendChild(h("div",{class:"section-title", text:"All tasks ("+list.length+")"}));
-    if(list.length===0){ wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Tap + to add a task")); }
-    else {
-      list.slice().sort(function(a,b){ return (a.assignee-b.assignee) || String(a.name).localeCompare(String(b.name)); })
+    // Archived (done-and-tucked-away) one-time tasks live behind a foldable
+    // section so the main list stays about 'what I still have to do'.
+    var live = [], archived = [];
+    S.chores.forEach(function(c){
+      if(S.filterPerson!==null && c.assignee!==S.filterPerson) return;
+      if(c.archived) archived.push(c); else live.push(c);
+    });
+    var recurring = live.filter(function(c){ return c.kind !== "oneTime"; });
+    var oneTimes  = live.filter(function(c){ return c.kind === "oneTime"; });
+    if(oneTimes.length){
+      wrap.appendChild(h("div",{class:"section-title", text:"One-time tasks ("+oneTimes.length+")"}));
+      oneTimes
+        .slice().sort(function(a,b){ return (a.startDate||"").localeCompare(b.startDate||""); })
         .forEach(function(c){ wrap.appendChild(taskRow(c)); });
+    }
+    wrap.appendChild(h("div",{class:"section-title", text:(oneTimes.length?"Recurring tasks":"All tasks")+" ("+recurring.length+")"}));
+    if(recurring.length===0 && oneTimes.length===0){
+      wrap.appendChild(h("div",{class:"empty"}, h("span",{class:"big",text:"📋"}), "Tap + to add a task"));
+    } else if(recurring.length){
+      recurring.slice().sort(function(a,b){ return (a.assignee-b.assignee) || String(a.name).localeCompare(String(b.name)); })
+        .forEach(function(c){ wrap.appendChild(taskRow(c)); });
+    }
+    if(archived.length){
+      tasksArchiveOpen = !!tasksArchiveOpen;
+      wrap.appendChild(h("button",{
+        style:"width:100%;margin-top:14px;padding:10px;border:1.5px dashed var(--border);border-radius:11px;background:transparent;color:var(--muted);font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
+        onClick:function(){ tasksArchiveOpen = !tasksArchiveOpen; render(); },
+        text:(tasksArchiveOpen ? "▾ Completed one-times ("+archived.length+")" : "▸ Completed one-times ("+archived.length+")")
+      }));
+      if(tasksArchiveOpen){
+        archived.slice().sort(function(a,b){ return (b.startDate||"").localeCompare(a.startDate||""); })
+          .forEach(function(c){ wrap.appendChild(taskRow(c)); });
+      }
     }
     return wrap;
   }
+  // Tracks the 'Completed one-times' fold state — device-local UI only.
+  var tasksArchiveOpen = false;
 
   // ---------- header / nav / render ----------
   function header(){
@@ -3165,9 +3334,10 @@
     else if(S.tab==="tasks") body=viewTasks();
     else body=viewLogros();
     root.appendChild(body);
-    if(S.tab==="today"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:openAdd})); }
+    if(S.tab==="today"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:function(){ S.modal="addChoose"; render(); }})); }
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
+    if(S.modal==="addChoose") root.appendChild(modalAddChoose());
     if(S.modal==="names") root.appendChild(modalNames());
     if(S.modal==="reminder") root.appendChild(modalReminder());
     if(S.modal==="cat") root.appendChild(modalCat());
