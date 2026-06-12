@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v115";
+  var APP_VERSION = "v116";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -644,6 +644,27 @@
     if(latest) return 1 - latest.o.assignee;
     return (c.assignee === 0 || c.assignee === 1) ? c.assignee : 0;
   }
+  // Seed person for a rotating chore that has NO history yet — picks
+  // whoever has fewer tasks left this month so the workload bar starts
+  // even instead of doubling down on whoever happens to own the template.
+  // Existing chores keep using nextRotatedAssignee (pure alternation).
+  function balancedSeedAssignee(c){
+    var counts = monthlyTaskCounts(c.id);
+    if(counts[0] === counts[1]){
+      return (c.assignee === 0 || c.assignee === 1) ? c.assignee : 0;
+    }
+    return counts[0] < counts[1] ? 0 : 1;
+  }
+  // First-occurrence seed used by materialiseSeries. Returns either the
+  // alternation-from-history value or, on a brand-new chore, the
+  // balanced-seed value.
+  function rotationSeed(c){
+    var latest = latestOccFor(c, function(o){
+      return !o.tombstone && (o.assignee === 0 || o.assignee === 1);
+    });
+    if(latest) return 1 - latest.o.assignee;
+    return balancedSeedAssignee(c);
+  }
   // When a parent chore gains an occurrence, its linked-after children get
   // one at parent date + N. Child assignee defaults to the child template's
   // own person (wash · Nico can pair with fold · Caro).
@@ -678,7 +699,9 @@
         var seed = parseYmd(c.startDate);
         if(!seed) return; // unscheduled — stays dormant until a date is picked
         var d0 = seed > TODAY ? seed : TODAY;
-        S.occurrences[occKey(c.id, d0)] = { assignee: seriesAssignee(c, null), done:false, doneAt:null, pinned:true };
+        var seedAssignee = c.rotate ? balancedSeedAssignee(c)
+          : (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+        S.occurrences[occKey(c.id, d0)] = { assignee: seedAssignee, done:false, doneAt:null, pinned:true };
         return;
       }
       // Calendar series: collect this chore's dates inside the window.
@@ -701,7 +724,7 @@
         for(var d3 = addDays(anchor, n * step); d3 <= horizon; d3 = addDays(d3, step)) dates.push(new Date(d3));
       }
       // Place, alternating per occurrence when the chore rotates.
-      var rot = c.rotate ? nextRotatedAssignee(c) : null;
+      var rot = c.rotate ? rotationSeed(c) : null;
       dates.forEach(function(d){
         var key = occKey(c.id, d);
         if(S.occurrences[key]) return; // anything there (incl. tombstone) wins
@@ -1475,26 +1498,30 @@
   // c.assignee here gave wrong numbers (e.g. a chore template-defaulted to
   // Nico but Planning-sheet-assigned to Caro this week was still counted
   // against Nico). Skips done, tombstoned, and unassigned slots.
-  function assignedPoints(){
+  // Count of assigned-but-undone, non-tombstoned occurrences in the current
+  // calendar month, per person. The workload bar reads this — counting
+  // tasks (not effort points) keeps the metric reasonable for "who has
+  // more on their plate this month" at a glance.
+  //
+  // When excludeChoreId is given, that chore is left out of the count;
+  // used by the series generator to balance a *new* chore against the
+  // load the rest of the calendar already carries.
+  function monthlyTaskCounts(excludeChoreId){
     var t = [0, 0];
     if(!S.occurrences) return t;
-    var fromStr = ymd(TODAY);
-    var toStr   = ymd(addDays(TODAY, 13));
-    // Pre-index by chore id stringified — occKey writes the id with string
-    // concat, so key.slice(0, under) is always a string, but chore.id is a
-    // number. A direct findChore(idStr) would fail the strict equality.
-    var byId = {};
-    S.chores.forEach(function(c){ byId[String(c.id)] = c; });
+    var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth(), 1);
+    var mLast  = new Date(TODAY.getFullYear(), TODAY.getMonth()+1, 0);
+    var fromStr = ymd(mFirst), toStr = ymd(mLast);
+    var excludeStr = excludeChoreId != null ? String(excludeChoreId) : null;
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
       if(!o || o.tombstone || o.done) return;
       if(o.assignee !== 0 && o.assignee !== 1) return;
-      var under = key.indexOf("_"); if(under < 0) return;
-      var dStr = key.slice(under + 1);
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(excludeStr && key.slice(0, dash) === excludeStr) return;
+      var dStr = key.slice(dash + 1);
       if(dStr < fromStr || dStr > toStr) return;
-      var chore = byId[key.slice(0, under)];
-      if(!chore) return;
-      t[o.assignee] += effortOf(chore);
+      t[o.assignee]++;
     });
     return t;
   }
@@ -1974,24 +2001,25 @@
   function viewLogros(){
     var wrap=h("div",{class:"content"});
 
-    // ----- Reparto de tareas (fair split by effort points) -----
-    var ap=assignedPoints(); var apTot=ap[0]+ap[1]||1;
+    // ----- Workload split — how many tasks each person has this month -----
+    var ap=monthlyTaskCounts(null); var apTot=ap[0]+ap[1]||1;
     wrap.appendChild(h("div",{class:"section-title", text:"Workload split"}));
     var rep=h("div",{class:"vs-card"});
     rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
-      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Workload by difficulty (points)")
+      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Tasks left this month")
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
+      var taskLbl = ap[p] === 1 ? "1 task" : ap[p] + " tasks";
       rep.appendChild(h("div",{class:"vs-row"},
         h("div",{class:"vs-top"},
           h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
-          h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:ap[p]+" pt"})
+          h("div",{class:"vs-pct", style:"color:"+PC[p].c, text:taskLbl})
         ),
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Each task repeats on the days you set in its editor. Points stack up here as you mark each occurrence done."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Counts tasks (not difficulty). New Alternate chores start on whoever has fewer — the split balances itself."}));
     wrap.appendChild(rep);
 
     // Monthly leaderboard with ‹ › navigation back to previous months.
@@ -2009,6 +2037,9 @@
     ));
 
     // Walk every day of the selected month, accumulate per-person totals and group by week.
+    // Per-month + per-week task counts (one done occurrence = 1, regardless
+    // of difficulty). Effort still drives Purrs / level / badges, just not
+    // the workload split.
     var counts=[0,0]; var perWeekMap={}; var weekStarts=[];
     for(var dCur=new Date(mStart); dCur<=mEnd; dCur=addDays(dCur,1)){
       var wkS=startOfWeek(dCur), wkKey=ymd(wkS);
@@ -2016,7 +2047,7 @@
       S.chores.forEach(function(c){
         if(!showsOnDay(c,dCur) || !isDone(c,dCur)) return;
         var who=occAssignee(c,dCur);
-        if(who===0||who===1){ counts[who]+=effortOf(c); perWeekMap[wkKey][who]+=effortOf(c); }
+        if(who===0||who===1){ counts[who]+=1; perWeekMap[wkKey][who]+=1; }
       });
     }
     var total=counts[0]+counts[1];
@@ -2042,7 +2073,7 @@
       var pct = total? Math.round(counts[p]/total*100) : 0;
       var streak = computeStreak(p);
       var statsLine = h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"},
-        h("span",{text: counts[p]+" pts done"})
+        h("span",{text: counts[p]+(counts[p]===1?" task done":" tasks done")})
       );
       if(streak > 0){
         statsLine.appendChild(h("span",{text:"·"}));
