@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v123";
+  var APP_VERSION = "v124";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3172,12 +3172,24 @@
     var ns=notifStatus();
     var notifBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--border);border-radius:11px;background:var(--input-bg);color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:enableNotifications,
       text: ns==="granted" ? "✅ Notifications are on" : (ns==="denied" ? "🔕 Blocked — fix in browser settings" : (ns==="unsupported" ? "Not supported on this device" : "🔔 Enable notifications")) });
-    children.push(
+    var notifChildren = [
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Notifications"}),
       notifBtn,
       h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Each phone enables its own."})
-    );
+    ];
+    // Test push — visible only when permission is granted. Uses the SW's
+    // showNotification() directly so it doesn't depend on the backend
+    // cron firing. If THIS doesn't pop up the OS/SW/permission pipeline is
+    // broken and real reminders won't fire either.
+    if(ns === "granted"){
+      notifChildren.push(h("button",{
+        style:"width:100%;padding:9px;margin-top:8px;border:1.5px dashed var(--accent2);border-radius:11px;background:transparent;color:var(--accent2);font:inherit;font-weight:700;font-size:12.5px;cursor:pointer;",
+        onClick: sendTestNotification,
+        text:"🧪 Send test notification"
+      }));
+    }
+    children.push.apply(children, notifChildren);
 
     // Backup controls are available only on the first person's phone (Nico).
     if(S.deviceUser===0){
@@ -3383,6 +3395,31 @@
       render();
     });
   }
+  // Fires a notification through the SW's own showNotification(). Skips the
+  // Web Push round-trip entirely — useful as a 'does the display pipeline
+  // work?' diagnostic. If this pops up, OS permission + SW + showNotification
+  // all work; if it doesn't, real reminders won't either.
+  function sendTestNotification(){
+    if(notifStatus() !== "granted"){
+      alert("Tap '🔔 Enable notifications' first.");
+      return;
+    }
+    if(!("serviceWorker" in navigator)){
+      alert("This device doesn't have a Service Worker — push isn't supported here.");
+      return;
+    }
+    navigator.serviceWorker.ready.then(function(reg){
+      return reg.showNotification("Olympaws · test", {
+        body: "If you can see this, notifications work on this phone.",
+        icon: "./icons/icon-192.png",
+        badge: "./icons/icon-192.png",
+        tag: "olympaws-test"
+      });
+    }).catch(function(err){
+      alert("Couldn't show the test notification: " + (err && err.message ? err.message : err));
+    });
+  }
+
   function subscribeToPush(){
     if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
     if(!VAPID_PUBLIC_KEY || !isAuthed()) return;
@@ -3628,7 +3665,15 @@
   updateMaxStreaks();
   evaluateBadges();
   render();
-  if(isAuthed()) pullState();
+  if(isAuthed()){
+    pullState();
+    // Silent re-subscribe on startup if the OS permission is still granted.
+    // The OS permission is sticky to the origin across SW unregisters, but
+    // the push subscription itself dies whenever forceAppUpdate clears the
+    // SW. Without this call the user would silently stop receiving pushes
+    // after every ↻ until they remembered to re-tap Enable Notifications.
+    if(notifStatus() === "granted") subscribeToPush();
+  }
   setInterval(function(){ if(isAuthed() && document.visibilityState!=="hidden") pullState(); }, 10000);
   document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible") pullState(); });
   window.addEventListener("online", pullState);
