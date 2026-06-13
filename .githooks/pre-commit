@@ -21,4 +21,20 @@ if printf '%s' "$staged_diff" | grep -nE "^\+" | grep -Eq "$patterns"; then
   exit 1
 fi
 
+# 3) Smoke test — parse-check + mock-runtime of the inline <script> so a
+# syntax error or init-time throw can't slip past the local commit.
+# CI re-runs the same script, but failing locally is much cheaper than
+# failing in a PR.
+if git diff --cached --name-only | grep -qE '(^|/)index\.html$'; then
+  if command -v node >/dev/null 2>&1; then
+    if ! node scripts/smoke.js > /tmp/olympaws-smoke.log 2>&1; then
+      echo "✖ scripts/smoke.js failed — index.html doesn't parse / run cleanly. Output:" >&2
+      cat /tmp/olympaws-smoke.log >&2
+      exit 1
+    fi
+  else
+    echo "⚠ node not installed locally; skipping smoke. CI will still run it." >&2
+  fi
+fi
+
 exit 0

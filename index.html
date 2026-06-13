@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v124";
+  var APP_VERSION = "v125";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3344,15 +3344,51 @@
   }
 
   // ---------- automatic weekly snapshot ----------
-  // Once a week (checked on app open) we save a snapshot of everything into the
-  // app's own storage under a FIXED key, so each new one OVERRIDES the previous.
-  // It's a one-tap rollback point that lives on your phone, fully offline.
+  // Once a week on app open, snapshot the full synced doc into a 4-slot
+  // ring buffer in localStorage. Each new snapshot overwrites the OLDEST
+  // slot, so we keep ~a month of weekly rollback points instead of one.
+  // Restore lists every slot so the user can pick which week to roll back
+  // to. Stored offline; never leaves the device.
+  //
+  // What's snapshotted: stateDoc() — the same shape Supabase sync uses.
+  // So a restore brings back occurrences, balances, badges, baselines,
+  // streaks, reminders, holiday flag, rebalance marker, everything.
+  // Previous versions snapshotted only { names, chores, doneLog, reminders }
+  // which silently lost the player's progress on restore.
+  var WEEKLY_SLOTS = 4;
+  function weeklySlotKey(i){ return "nh_weeklySnap_" + i; }
+  function readWeeklySlot(i){
+    try{
+      var raw = localStorage.getItem(weeklySlotKey(i));
+      if(!raw) return null;
+      var p = JSON.parse(raw);
+      return (p && p.ts && p.data) ? p : null;
+    }catch(e){ return null; }
+  }
+  function listWeeklySnapshots(){
+    var snaps = [];
+    for(var i = 0; i < WEEKLY_SLOTS; i++){
+      var s = readWeeklySlot(i);
+      if(s) snaps.push({ idx: i, ts: s.ts, data: s.data });
+    }
+    // Newest first.
+    snaps.sort(function(a, b){ return b.ts - a.ts; });
+    return snaps;
+  }
   function takeWeeklySnapshot(){
     try{
-      var snap={ app:"our-home", version:1, ts:Date.now(),
-                 names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders };
-      localStorage.setItem("nh_weeklySnapshot", JSON.stringify(snap)); // overrides previous
+      // Find the oldest slot (or first empty) to overwrite.
+      var oldestIdx = 0, oldestTs = Infinity;
+      for(var i = 0; i < WEEKLY_SLOTS; i++){
+        var s = readWeeklySlot(i);
+        if(!s){ oldestIdx = i; break; }
+        if(s.ts < oldestTs){ oldestTs = s.ts; oldestIdx = i; }
+      }
+      var snap = { app: "olympaws", version: 3, ts: Date.now(), data: stateDoc() };
+      localStorage.setItem(weeklySlotKey(oldestIdx), JSON.stringify(snap));
       localStorage.setItem("nh_weeklyBackupAt", String(snap.ts));
+      // One-shot migration: old v1 snapshot under nh_weeklySnapshot is now
+      // redundant. Leave it in place for safety, but stop reading from it.
     }catch(e){}
   }
   function maybeWeeklySnapshot(){
@@ -3361,18 +3397,67 @@
       if(!last || (Date.now()-last) >= 7*86400000){ takeWeeklySnapshot(); }
     }catch(e){}
   }
+  // Applies a snapshot's data through applyDoc — same path Supabase sync
+  // uses. Comprehensive, derived state (badges, streaks) gets re-evaluated
+  // automatically, and the local push subscription / device user stay
+  // untouched (they're device-local, never in stateDoc).
+  function restoreFromSnapshot(snap){
+    if(!snap || !snap.data) return false;
+    applyDoc(snap.data);
+    lastSyncedAt = 0; // force the next sync to re-push from us
+    save();
+    render();
+    return true;
+  }
   function restoreWeeklySnapshot(){
-    var raw=null; try{ raw=localStorage.getItem("nh_weeklySnapshot"); }catch(e){}
-    if(!raw){ alert("No weekly backup yet — one is created automatically once a week."); return; }
-    var data=null; try{ data=JSON.parse(raw); }catch(e){}
-    if(!data || !Array.isArray(data.chores)){ alert("The weekly backup looks invalid."); return; }
-    if(!confirm("Restore everything to the weekly backup from "+new Date(data.ts).toLocaleString()+"? Your current data will be overwritten.")) return;
-    S.chores   = data.chores;
-    S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
-    S.doneLog  = (data.doneLog && typeof data.doneLog==="object") ? data.doneLog : {};
-    S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
-    save(); S.modal=null; render();
-    alert("Restored the weekly backup.");
+    var snaps = listWeeklySnapshots();
+    // Legacy fallback — a v1 snapshot saved by an older client. Restore from
+    // it only if we have nothing in the ring buffer.
+    if(snaps.length === 0){
+      var legacyRaw = null; try{ legacyRaw = localStorage.getItem("nh_weeklySnapshot"); }catch(e){}
+      if(legacyRaw){
+        var legacy = null; try{ legacy = JSON.parse(legacyRaw); }catch(e){}
+        if(legacy && Array.isArray(legacy.chores)){
+          if(!confirm("Restore the legacy weekly backup from "+new Date(legacy.ts).toLocaleString()+"? Only names, chores, doneLog, and reminders survive (older backups didn't snapshot the full state).")) return;
+          S.chores = legacy.chores;
+          if(Array.isArray(legacy.names) && legacy.names.length===2) S.names = legacy.names;
+          S.doneLog = (legacy.doneLog && typeof legacy.doneLog === "object") ? legacy.doneLog : {};
+          S.reminders = Array.isArray(legacy.reminders) ? legacy.reminders : [];
+          save(); S.modal=null; render();
+          alert("Restored the legacy weekly backup.");
+          return;
+        }
+      }
+      alert("No weekly backup yet — one is created automatically once a week.");
+      return;
+    }
+    // Single-snapshot path stays a one-tap restore.
+    if(snaps.length === 1){
+      var only = snaps[0];
+      if(!confirm("Restore everything to the weekly backup from "+new Date(only.ts).toLocaleString()+"? Your current data will be overwritten.")) return;
+      restoreFromSnapshot(only);
+      S.modal=null; render();
+      alert("Restored the weekly backup.");
+      return;
+    }
+    // Multiple snapshots: list them so you can pick one. Browsers don't have
+    // a great multi-choice prompt, so we cycle through with confirm dialogs
+    // (oldest first → newest), and a single 'Latest' shortcut at the top.
+    if(confirm("Restore the LATEST weekly backup ("+new Date(snaps[0].ts).toLocaleString()+")? Tap Cancel to pick an older one.")){
+      restoreFromSnapshot(snaps[0]);
+      S.modal=null; render();
+      alert("Restored the latest weekly backup.");
+      return;
+    }
+    for(var j = 1; j < snaps.length; j++){
+      var s2 = snaps[j];
+      if(confirm("Restore from "+new Date(s2.ts).toLocaleString()+"? Tap Cancel to see the next older one.")){
+        restoreFromSnapshot(s2);
+        S.modal=null; render();
+        alert("Restored that weekly backup.");
+        return;
+      }
+    }
   }
 
   // ---------- notifications (web push) ----------

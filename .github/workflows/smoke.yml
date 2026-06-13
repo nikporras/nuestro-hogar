@@ -1,0 +1,32 @@
+name: smoke
+
+# Catches the class of bug that white-screened the app in v103 — a syntax
+# error or a ReferenceError thrown during the initial render. Both would
+# slip past human review and only surface once a user loads the page.
+#
+# This workflow runs scripts/smoke.js, which:
+#   1. Parse-checks index.html's inline <script> via `new Function(script)`.
+#   2. Mock-runs the IIFE with stubbed-out browser globals so any throw on
+#      app init surfaces here instead of on a user's phone.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run smoke
+        run: node scripts/smoke.js
