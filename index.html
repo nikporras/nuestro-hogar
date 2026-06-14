@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v125";
+  var APP_VERSION = "v126";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -417,6 +417,13 @@
 
   // Migrate any old Spanish frequency labels on stored tasks to English.
   (function(){ var ch=false; S.chores.forEach(function(c){ if(FREQ_MIG[c.freq]){ c.freq=FREQ_MIG[c.freq]; ch=true; } }); if(ch) save(); })();
+
+  // Migrate the flat household-wide S.badges shape (legacy: {id:ts,...}) to the
+  // per-person shape ({"0":{...},"1":{...}}) used since v126. Runs early so any
+  // reader of S.badges sees the new layout. Function is defined later — it's
+  // safe to reference here because this IIFE runs at script-execution time
+  // *after* all `function` declarations are hoisted.
+  migrateBadgesToPerPerson();
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
   function saveLocal(){ try{
@@ -1084,6 +1091,7 @@
     if(Array.isArray(d.rewards)) S.rewards=d.rewards;
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
     if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
+    migrateBadgesToPerPerson();
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
@@ -1398,64 +1406,70 @@
   // The monotone fields (tripleThreat, helped* booleans, helpsInBest*, maxDayEarning)
   // only ever move upward — earning a streak/triple in the past stays true even
   // after an unmark, matching the "achievements are forever" semantics.
+  // Badge stats are tracked per person — each of Nico and Caro earns their
+  // own copy of every badge. Shared catalog/reward badges count toward both
+  // because the data underneath is shared; the per-person model keeps Nico's
+  // first task from spuriously unlocking Caro's First Spark.
   function emptyBadgeStats(){
+    return { perPerson: [emptyPersonStats(), emptyPersonStats()] };
+  }
+  function emptyPersonStats(){
     return {
       totalDone:0, byDiff:{1:0,2:0,3:0},
-      doneByPerson:[0,0], helpsByPerson:[0,0],
-      perDayHelps:[{},{}], perWeekHelps:[{},{}],
+      helps:0, perDayHelps:{}, perWeekHelps:{},
       perDayDiff:{}, perDayEarning:{},
       helpsInBestDay:0, helpsInBestWeek:0, maxDayEarning:0,
-      tripleThreat:false, helpedOnWeekend:false,
-      helpedBeforeNoon:false, helpedAfter9pm:false
+      tripleThreat:false,
+      helpedOnWeekend:false, helpedBeforeNoon:false, helpedAfter9pm:false
     };
   }
   function applyDoneToStats(s, c, dateStr, assignee, doneAt){
-    s.totalDone++;
-    s.doneByPerson[assignee]++;
+    var p = s.perPerson[assignee];
+    p.totalDone++;
     var diff = effortOf(c);
-    if(diff===1||diff===2||diff===3) s.byDiff[diff]++;
-    if(!s.perDayDiff[dateStr]) s.perDayDiff[dateStr] = {};
-    s.perDayDiff[dateStr][diff] = true;
-    if(s.perDayDiff[dateStr][1] && s.perDayDiff[dateStr][2] && s.perDayDiff[dateStr][3]) s.tripleThreat = true;
-    s.perDayEarning[dateStr] = (s.perDayEarning[dateStr]||0) + diff;
-    if(s.perDayEarning[dateStr] > s.maxDayEarning) s.maxDayEarning = s.perDayEarning[dateStr];
+    if(diff===1||diff===2||diff===3) p.byDiff[diff]++;
+    if(!p.perDayDiff[dateStr]) p.perDayDiff[dateStr] = {};
+    p.perDayDiff[dateStr][diff] = true;
+    if(p.perDayDiff[dateStr][1] && p.perDayDiff[dateStr][2] && p.perDayDiff[dateStr][3]) p.tripleThreat = true;
+    p.perDayEarning[dateStr] = (p.perDayEarning[dateStr]||0) + diff;
+    if(p.perDayEarning[dateStr] > p.maxDayEarning) p.maxDayEarning = p.perDayEarning[dateStr];
     var defAssn = c.assignee;
     if((defAssn===0||defAssn===1) && defAssn !== assignee){
-      s.helpsByPerson[assignee]++;
+      p.helps++;
       var sp = dateStr.split("-");
       var dateObj = new Date(+sp[0], (+sp[1])-1, +sp[2]);
-      s.perDayHelps[assignee][dateStr] = (s.perDayHelps[assignee][dateStr]||0) + 1;
-      if(s.perDayHelps[assignee][dateStr] > s.helpsInBestDay) s.helpsInBestDay = s.perDayHelps[assignee][dateStr];
+      p.perDayHelps[dateStr] = (p.perDayHelps[dateStr]||0) + 1;
+      if(p.perDayHelps[dateStr] > p.helpsInBestDay) p.helpsInBestDay = p.perDayHelps[dateStr];
       var wkKey = ymd(startOfWeek(dateObj));
-      s.perWeekHelps[assignee][wkKey] = (s.perWeekHelps[assignee][wkKey]||0) + 1;
-      if(s.perWeekHelps[assignee][wkKey] > s.helpsInBestWeek) s.helpsInBestWeek = s.perWeekHelps[assignee][wkKey];
+      p.perWeekHelps[wkKey] = (p.perWeekHelps[wkKey]||0) + 1;
+      if(p.perWeekHelps[wkKey] > p.helpsInBestWeek) p.helpsInBestWeek = p.perWeekHelps[wkKey];
       var dow = dateObj.getDay();
-      if(dow===0||dow===6) s.helpedOnWeekend = true;
+      if(dow===0||dow===6) p.helpedOnWeekend = true;
       if(doneAt){
         var dt = new Date(doneAt);
         if(!isNaN(dt.getTime())){
           var hr = dt.getHours();
-          if(hr < 12) s.helpedBeforeNoon = true;
-          if(hr >= 21) s.helpedAfter9pm = true;
+          if(hr < 12) p.helpedBeforeNoon = true;
+          if(hr >= 21) p.helpedAfter9pm = true;
         }
       }
     }
   }
   function undoDoneFromStats(s, c, dateStr, assignee){
-    s.totalDone--;
-    s.doneByPerson[assignee]--;
+    var p = s.perPerson[assignee];
+    p.totalDone--;
     var diff = effortOf(c);
-    if(diff===1||diff===2||diff===3) s.byDiff[diff]--;
-    if(s.perDayDiff[dateStr]) delete s.perDayDiff[dateStr][diff];
-    if(s.perDayEarning[dateStr]) s.perDayEarning[dateStr] -= diff;
+    if(diff===1||diff===2||diff===3) p.byDiff[diff]--;
+    if(p.perDayDiff[dateStr]) delete p.perDayDiff[dateStr][diff];
+    if(p.perDayEarning[dateStr]) p.perDayEarning[dateStr] -= diff;
     var defAssn = c.assignee;
     if((defAssn===0||defAssn===1) && defAssn !== assignee){
-      s.helpsByPerson[assignee]--;
-      if(s.perDayHelps[assignee][dateStr]) s.perDayHelps[assignee][dateStr]--;
+      p.helps--;
+      if(p.perDayHelps[dateStr]) p.perDayHelps[dateStr]--;
       var sp = dateStr.split("-");
       var dateObj = new Date(+sp[0], (+sp[1])-1, +sp[2]);
       var wkKey = ymd(startOfWeek(dateObj));
-      if(s.perWeekHelps[assignee][wkKey]) s.perWeekHelps[assignee][wkKey]--;
+      if(p.perWeekHelps[wkKey]) p.perWeekHelps[wkKey]--;
       // helpsInBest*, helped* booleans stay — monotone.
     }
   }
@@ -1523,38 +1537,43 @@
   }
   function invalidateBadgeStats(){ S.badgeStats = null; }
 
+  // Returns [statsForNico, statsForCaro]. Each person earns their own copy of
+  // every badge. Reward catalog growth (catalogCount / maxRewardCost) is shared
+  // — both phones see the same list grow — so both people are credited for it.
+  // Redemptions split by `redemption.by`; balances and streaks split per person.
   function computeBadgeStats(){
     if(!S.badgeStats) S.badgeStats = buildBadgeStats();
     var s = S.badgeStats;
-    // Wrap the cumulative cache with the on-demand reward/redemption/balance views.
-    // Use the precise wipe moment when available — falling back to date+midnight
-    // means rewards/redemptions made EARLIER on the wipe day still pass the
-    // filter, which is how catalog/redemption badges sneak back in.
     var baselineISO = S.badgeBaselineAt || (S.badgeBaselineDate ? S.badgeBaselineDate + "T00:00:00.000Z" : "");
     var bb = S.badgeBaselineBalances || [0,0];
     function afterBaseline(iso){ return baselineISO ? (iso || "") >= baselineISO : true; }
     var rewardsSince = (S.rewards||[]).filter(function(r){ return afterBaseline(r.createdAt); });
     var redemptionsSince = (S.redemptions||[]).filter(function(r){ return afterBaseline(r.redeemedAt); });
-    var teamPlayer = (s.doneByPerson[0] > 0 && s.helpsByPerson[0] / s.doneByPerson[0] >= 0.5) ||
-                     (s.doneByPerson[1] > 0 && s.helpsByPerson[1] / s.doneByPerson[1] >= 0.5);
-    return {
-      totalDone: s.totalDone,
-      byDiff: s.byDiff,
-      maxStreak: Math.max(S.maxStreaks[0]||0, S.maxStreaks[1]||0),
-      tripleThreat: s.tripleThreat,
-      helperTotal: Math.max(s.helpsByPerson[0], s.helpsByPerson[1]),
-      helpsInBestWeek: s.helpsInBestWeek,
-      helpsInBestDay: s.helpsInBestDay,
-      helpedOnWeekend: s.helpedOnWeekend,
-      helpedBeforeNoon: s.helpedBeforeNoon,
-      helpedAfter9pm: s.helpedAfter9pm,
-      teamPlayer: teamPlayer,
-      redemptionCount: redemptionsSince.length,
-      catalogCount: rewardsSince.length,
-      maxRewardCost: rewardsSince.reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0),
-      maxDayEarning: s.maxDayEarning,
-      maxBalance: Math.max((S.balances[0]||0) - (bb[0]||0), (S.balances[1]||0) - (bb[1]||0))
-    };
+    var catalogCount = rewardsSince.length;
+    var maxRewardCost = rewardsSince.reduce(function(m,r){ return Math.max(m, r.cost||0); }, 0);
+    return [0, 1].map(function(p){
+      var pp = s.perPerson[p];
+      var redCount = redemptionsSince.filter(function(r){ return r.by === p; }).length;
+      var teamPlayer = pp.totalDone > 0 && pp.helps / pp.totalDone >= 0.5;
+      return {
+        totalDone: pp.totalDone,
+        byDiff: pp.byDiff,
+        maxStreak: S.maxStreaks[p] || 0,
+        tripleThreat: pp.tripleThreat,
+        helperTotal: pp.helps,
+        helpsInBestWeek: pp.helpsInBestWeek,
+        helpsInBestDay: pp.helpsInBestDay,
+        helpedOnWeekend: pp.helpedOnWeekend,
+        helpedBeforeNoon: pp.helpedBeforeNoon,
+        helpedAfter9pm: pp.helpedAfter9pm,
+        teamPlayer: teamPlayer,
+        redemptionCount: redCount,
+        catalogCount: catalogCount,
+        maxRewardCost: maxRewardCost,
+        maxDayEarning: pp.maxDayEarning,
+        maxBalance: Math.max(0, (S.balances[p]||0) - (bb[p]||0))
+      };
+    });
   }
 
   // Wipes every unlocked badge + the personal-best streaks, and sets today as the
@@ -1575,7 +1594,7 @@
     S.doneLog = {};
     S.balances = [0, 0];
     S.redemptions = [];
-    S.badges = {};
+    S.badges = { "0": {}, "1": {} };
     S.maxStreaks = [0, 0];
     S.badgeBaselineDate = ymd(TODAY);
     S.badgeBaselineAt = new Date().toISOString();
@@ -1610,22 +1629,50 @@
     alert("Done. All tasks are unscheduled — open each one on the Tasks tab to set its days again.");
   }
 
-  // Called from save(); checks every badge predicate, records the unlock instant.
+  // Called from save(); checks every badge predicate per person and records the
+  // unlock instant in S.badges[p][b.id] = ISO timestamp.
   function evaluateBadges(){
-    if(!S.badges) S.badges = {};
-    var stats = computeBadgeStats();
+    migrateBadgesToPerPerson();
+    var statsArr = computeBadgeStats();
     var defs = badgeDefs();
     var now = new Date().toISOString();
     var newlyUnlocked = [];
-    defs.forEach(function(b){
-      if(S.badges[b.id]) return;
-      if(b.check(stats)){
-        S.badges[b.id] = now;
-        newlyUnlocked.push(b);
-        queueCatPopup("atena", "Badge unlocked: " + b.icon + " " + b.name + " — " + b.desc);
-      }
+    [0, 1].forEach(function(p){
+      var st = statsArr[p];
+      defs.forEach(function(b){
+        if(S.badges[p][b.id]) return;
+        if(b.check(st)){
+          S.badges[p][b.id] = now;
+          newlyUnlocked.push({def:b, person:p});
+          queueCatPopup("atena", S.names[p] + " unlocked: " + b.icon + " " + b.name + " — " + b.desc);
+        }
+      });
     });
     return newlyUnlocked;
+  }
+
+  // Migrates legacy flat S.badges ({id:ts,...}) to per-person shape
+  // ({"0":{id:ts,...},"1":{id:ts,...}}). Legacy unlocks were household-wide so
+  // both people get credit — keeps existing progress visible after the refactor.
+  function migrateBadgesToPerPerson(){
+    if(!S.badges || typeof S.badges !== "object"){
+      S.badges = { "0": {}, "1": {} };
+      return;
+    }
+    var hasNew = (S.badges["0"] && typeof S.badges["0"] === "object") ||
+                 (S.badges["1"] && typeof S.badges["1"] === "object");
+    if(hasNew){
+      if(!S.badges["0"] || typeof S.badges["0"] !== "object") S.badges["0"] = {};
+      if(!S.badges["1"] || typeof S.badges["1"] !== "object") S.badges["1"] = {};
+      return;
+    }
+    var flat = S.badges;
+    S.badges = { "0": {}, "1": {} };
+    Object.keys(flat).forEach(function(id){
+      var ts = flat[id];
+      S.badges["0"][id] = ts;
+      S.badges["1"][id] = ts;
+    });
   }
 
   function choresForDay(date){
@@ -2399,51 +2446,55 @@
       wrap.appendChild(logCard);
     }
 
-    // ---------- Badges (Phase 5 + collapse/expand) ----------
+    // ---------- Badges, per person ----------
+    // Two sections — each person has their own copy of every badge so completion
+    // by one phone doesn't spuriously unlock the other.
     var defs = badgeDefs();
-    var unlockedCount = 0;
-    defs.forEach(function(b){ if(S.badges[b.id]) unlockedCount++; });
-    // Sorted unlocked badges, newest first; the rest in their natural category order.
-    var unlockedSorted = defs.filter(function(b){ return S.badges[b.id]; })
-      .map(function(b){ return { def:b, at:S.badges[b.id] }; })
-      .sort(function(a,b){ return String(b.at).localeCompare(String(a.at)); })
-      .map(function(x){ return x.def; });
-    var lockedInOrder = defs.filter(function(b){ return !S.badges[b.id]; });
-    var visible = badgesExpanded ? unlockedSorted.concat(lockedInOrder) : unlockedSorted.slice(0,5);
+    [0, 1].forEach(function(p){
+      var pBadges = (S.badges && S.badges[p]) || {};
+      var unlockedCount = defs.filter(function(b){ return pBadges[b.id]; }).length;
+      var unlockedSorted = defs.filter(function(b){ return pBadges[b.id]; })
+        .map(function(b){ return { def:b, at:pBadges[b.id] }; })
+        .sort(function(a,b){ return String(b.at).localeCompare(String(a.at)); })
+        .map(function(x){ return x.def; });
+      var lockedInOrder = defs.filter(function(b){ return !pBadges[b.id]; });
+      var expanded = !!badgesExpanded[p];
+      var visible = expanded ? unlockedSorted.concat(lockedInOrder) : unlockedSorted.slice(0,5);
 
-    wrap.appendChild(h("div",{class:"section-title", text:"Badges  ("+unlockedCount+" / "+defs.length+")"}));
-    var bCard = h("div",{class:"vs-card", style:"padding:14px 12px;cursor:pointer;",
-      onClick: function(e){ if(e.target.tagName !== "BUTTON" && !e.target.closest || !e.target.closest(".badge-cell-noexpand")){ badgesExpanded = !badgesExpanded; render(); } }
-    });
-    var cols = badgesExpanded ? 4 : Math.max(1, Math.min(5, visible.length));
-    var grid = h("div",{style:"display:grid;grid-template-columns:repeat("+cols+",1fr);gap:10px;"});
-    if(visible.length === 0){
-      grid.appendChild(h("div",{style:"grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:8px 0;", text:"No badges yet — tap to see what's available."}));
-    } else {
-      visible.forEach(function(b){
-        var got = !!S.badges[b.id];
-        var iconEl;
-        if(!got){
-          iconEl = h("div",{style:"font-size:30px;", text:"🔒"});
-        } else if(b.img){
-          iconEl = h("img",{src:b.img, alt:b.name, style:"width:34px;height:34px;display:block;margin:0 auto;"});
-        } else {
-          iconEl = h("div",{style:"font-size:30px;", text:b.icon});
-        }
-        var cell = h("div",{class:"badge-cell-noexpand", style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";",
-          onClick:function(e){ e.stopPropagation(); openBadge(b); }
-        },
-          iconEl,
-          h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:4px;line-height:1.2;", text:got ? b.name : "Locked"})
-        );
-        grid.appendChild(cell);
+      wrap.appendChild(h("div",{class:"section-title", text:S.names[p]+"'s badges  ("+unlockedCount+" / "+defs.length+")"}));
+      var bCard = h("div",{class:"vs-card", style:"padding:14px 12px;cursor:pointer;",
+        onClick: function(e){ if(e.target.tagName !== "BUTTON" && !e.target.closest || !e.target.closest(".badge-cell-noexpand")){ badgesExpanded[p] = !badgesExpanded[p]; render(); } }
       });
-    }
-    bCard.appendChild(grid);
-    bCard.appendChild(h("div",{style:"text-align:center;font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.08em;margin-top:12px;text-transform:uppercase;",
-      text: badgesExpanded ? "Tap to collapse" : "Tap to see all " + defs.length
-    }));
-    wrap.appendChild(bCard);
+      var cols = expanded ? 4 : Math.max(1, Math.min(5, visible.length));
+      var grid = h("div",{style:"display:grid;grid-template-columns:repeat("+cols+",1fr);gap:10px;"});
+      if(visible.length === 0){
+        grid.appendChild(h("div",{style:"grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:8px 0;", text:"No badges yet — tap to see what's available."}));
+      } else {
+        visible.forEach(function(b){
+          var got = !!pBadges[b.id];
+          var iconEl;
+          if(!got){
+            iconEl = h("div",{style:"font-size:30px;", text:"🔒"});
+          } else if(b.img){
+            iconEl = h("img",{src:b.img, alt:b.name, style:"width:34px;height:34px;display:block;margin:0 auto;"});
+          } else {
+            iconEl = h("div",{style:"font-size:30px;", text:b.icon});
+          }
+          var cell = h("div",{class:"badge-cell-noexpand", style:"text-align:center;cursor:pointer;opacity:"+(got?"1":"0.32")+";",
+            onClick:function(e){ e.stopPropagation(); openBadge(b); }
+          },
+            iconEl,
+            h("div",{style:"font-size:10px;color:var(--muted);font-weight:700;margin-top:4px;line-height:1.2;", text:got ? b.name : "Locked"})
+          );
+          grid.appendChild(cell);
+        });
+      }
+      bCard.appendChild(grid);
+      bCard.appendChild(h("div",{style:"text-align:center;font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.08em;margin-top:12px;text-transform:uppercase;",
+        text: expanded ? "Tap to collapse" : "Tap to see all " + defs.length
+      }));
+      wrap.appendChild(bCard);
+    });
 
     // "Meet the Olympaws" — small decorative card; each cat is a popup voice elsewhere.
     wrap.appendChild(h("div",{class:"section-title", text:"Meet the Olympaws"}));
@@ -2506,8 +2557,8 @@
       h("div",{class:"modal"}, children));
   }
 
-  // UI-only toggle for the Badges card: top 5 by default, full grid on tap.
-  var badgesExpanded = false;
+  // UI-only toggle for each person's Badges card: top 5 by default, full grid on tap.
+  var badgesExpanded = { 0:false, 1:false };
 
 
   // ---------- badge detail modal ----------
@@ -2516,21 +2567,24 @@
   function modalBadge(){
     if(!badgeView) return h("div");
     var b = badgeView;
-    var got = S.badges[b.id];
-    var unlockedAt = got ? formatWhen(got) : null;
+    var got0 = S.badges && S.badges["0"] && S.badges["0"][b.id];
+    var got1 = S.badges && S.badges["1"] && S.badges["1"][b.id];
+    var anyGot = got0 || got1;
     var bigIcon;
-    if(!got) bigIcon = h("div",{style:"font-size:74px;opacity:0.4;", text:"🔒"});
+    if(!anyGot) bigIcon = h("div",{style:"font-size:74px;opacity:0.4;", text:"🔒"});
     else if(b.img) bigIcon = h("img",{src:b.img, alt:b.name, style:"width:96px;height:96px;display:block;margin:0 auto;"});
     else bigIcon = h("div",{style:"font-size:74px;", text:b.icon});
+    function line(p, ts){
+      var label = S.names[p] + ": " + (ts ? "unlocked " + formatWhen(ts) : "not yet");
+      return h("div",{style:"font-size:12.5px;color:var(--muted);margin:2px 0;", text:label});
+    }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; badgeView=null; render(); } }},
       h("div",{class:"modal", style:"text-align:center;padding:26px 18px 30px;"},
         bigIcon,
-        h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: got ? b.name : "Locked"}),
+        h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: anyGot ? b.name : "Locked"}),
         h("div",{style:"color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.16em;font-weight:700;margin-bottom:8px;", text:b.cat}),
-        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:10px;", text:b.desc}),
-        got
-          ? h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Unlocked "+unlockedAt})
-          : h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Not yet unlocked"}),
+        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:14px;", text:b.desc}),
+        h("div",{style:"margin-bottom:18px;"}, line(0, got0), line(1, got1)),
         h("button",{class:"btn ghost", style:"width:60%;margin:0 auto;display:block;", onClick:function(){ S.modal=null; badgeView=null; render(); }, text:"Close"})
       ));
   }
