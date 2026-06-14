@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v126";
+  var APP_VERSION = "v127";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1651,28 +1651,23 @@
     return newlyUnlocked;
   }
 
-  // Migrates legacy flat S.badges ({id:ts,...}) to per-person shape
-  // ({"0":{id:ts,...},"1":{id:ts,...}}). Legacy unlocks were household-wide so
-  // both people get credit — keeps existing progress visible after the refactor.
+  // Splits S.badges into the per-person shape. On the very first run after
+  // v126b, any prior unlocks are dropped (both the legacy flat household
+  // dict AND the briefly-shipped v126a "duplicated to both" shape) and
+  // evaluateBadges() re-derives each person's earned set from real
+  // per-person completion history. After that, this just ensures shape.
   function migrateBadgesToPerPerson(){
-    if(!S.badges || typeof S.badges !== "object"){
-      S.badges = { "0": {}, "1": {} };
+    var FLAG = "nh_badges_perperson_v126b";
+    var done = false;
+    try { done = localStorage.getItem(FLAG) === "1"; } catch(e){}
+    if(!done){
+      S.badges = { "0":{}, "1":{} };
+      try { localStorage.setItem(FLAG, "1"); } catch(e){}
       return;
     }
-    var hasNew = (S.badges["0"] && typeof S.badges["0"] === "object") ||
-                 (S.badges["1"] && typeof S.badges["1"] === "object");
-    if(hasNew){
-      if(!S.badges["0"] || typeof S.badges["0"] !== "object") S.badges["0"] = {};
-      if(!S.badges["1"] || typeof S.badges["1"] !== "object") S.badges["1"] = {};
-      return;
-    }
-    var flat = S.badges;
-    S.badges = { "0": {}, "1": {} };
-    Object.keys(flat).forEach(function(id){
-      var ts = flat[id];
-      S.badges["0"][id] = ts;
-      S.badges["1"][id] = ts;
-    });
+    if(!S.badges || typeof S.badges !== "object") S.badges = { "0":{}, "1":{} };
+    if(!S.badges["0"] || typeof S.badges["0"] !== "object") S.badges["0"] = {};
+    if(!S.badges["1"] || typeof S.badges["1"] !== "object") S.badges["1"] = {};
   }
 
   function choresForDay(date){
@@ -2450,7 +2445,10 @@
     // Two sections — each person has their own copy of every badge so completion
     // by one phone doesn't spuriously unlock the other.
     var defs = badgeDefs();
-    [0, 1].forEach(function(p){
+    // Only show the device user's badges — the other person sees their own on
+    // their own phone. (Settings → "This phone is used by" controls who's who.)
+    var devUser = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
+    [devUser].forEach(function(p){
       var pBadges = (S.badges && S.badges[p]) || {};
       var unlockedCount = defs.filter(function(b){ return pBadges[b.id]; }).length;
       var unlockedSorted = defs.filter(function(b){ return pBadges[b.id]; })
@@ -2567,24 +2565,22 @@
   function modalBadge(){
     if(!badgeView) return h("div");
     var b = badgeView;
-    var got0 = S.badges && S.badges["0"] && S.badges["0"][b.id];
-    var got1 = S.badges && S.badges["1"] && S.badges["1"][b.id];
-    var anyGot = got0 || got1;
+    var p = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
+    var got = S.badges && S.badges[p] && S.badges[p][b.id];
+    var unlockedAt = got ? formatWhen(got) : null;
     var bigIcon;
-    if(!anyGot) bigIcon = h("div",{style:"font-size:74px;opacity:0.4;", text:"🔒"});
+    if(!got) bigIcon = h("div",{style:"font-size:74px;opacity:0.4;", text:"🔒"});
     else if(b.img) bigIcon = h("img",{src:b.img, alt:b.name, style:"width:96px;height:96px;display:block;margin:0 auto;"});
     else bigIcon = h("div",{style:"font-size:74px;", text:b.icon});
-    function line(p, ts){
-      var label = S.names[p] + ": " + (ts ? "unlocked " + formatWhen(ts) : "not yet");
-      return h("div",{style:"font-size:12.5px;color:var(--muted);margin:2px 0;", text:label});
-    }
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay"){ S.modal=null; badgeView=null; render(); } }},
       h("div",{class:"modal", style:"text-align:center;padding:26px 18px 30px;"},
         bigIcon,
-        h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: anyGot ? b.name : "Locked"}),
+        h("h3",{style:"margin:10px 0 4px;font-size:20px;", text: got ? b.name : "Locked"}),
         h("div",{style:"color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.16em;font-weight:700;margin-bottom:8px;", text:b.cat}),
-        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:14px;", text:b.desc}),
-        h("div",{style:"margin-bottom:18px;"}, line(0, got0), line(1, got1)),
+        h("div",{style:"font-size:14px;color:var(--text);margin-bottom:10px;", text:b.desc}),
+        got
+          ? h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Unlocked "+unlockedAt})
+          : h("div",{style:"font-size:12.5px;color:var(--muted);margin-bottom:18px;", text:"Not yet unlocked"}),
         h("button",{class:"btn ghost", style:"width:60%;margin:0 auto;display:block;", onClick:function(){ S.modal=null; badgeView=null; render(); }, text:"Close"})
       ));
   }
