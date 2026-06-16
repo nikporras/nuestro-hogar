@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v127";
+  var APP_VERSION = "v128";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1090,7 +1090,17 @@
     if(Array.isArray(d.balances)&&d.balances.length===2) S.balances=d.balances;
     if(Array.isArray(d.rewards)) S.rewards=d.rewards;
     if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
-    if(d.badges&&typeof d.badges==="object") S.badges=d.badges;
+    // Track whether the incoming badges blob carried leftover non per-person
+    // keys — that means the remote was last written by a pre-v127 client and
+    // we should push the cleaned-up shape back so the next pull doesn't loop.
+    var badgesDirty = false;
+    if(d.badges&&typeof d.badges==="object"){
+      var bKeys = Object.keys(d.badges);
+      for(var i = 0; i < bKeys.length; i++){
+        if(bKeys[i] !== "0" && bKeys[i] !== "1"){ badgesDirty = true; break; }
+      }
+      S.badges = d.badges;
+    }
     migrateBadgesToPerPerson();
     if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
@@ -1108,7 +1118,13 @@
     clampBalances(); // a partner on an older build can push a negative balance — fix on receive.
     invalidateBadgeStats(); // remote may have new completions — cache is stale
     updateMaxStreaks();
-    evaluateBadges();
+    var newlyUnlocked = evaluateBadges();
+    // If the remote was dirty OR we unlocked something new, push the clean
+    // doc back so other devices (and the next pull) see the right state.
+    if(badgesDirty || (newlyUnlocked && newlyUnlocked.length)){
+      saveLocal();
+      pushState();
+    }
   }
 
   // Pull the shared document; adopt it if it is newer than what we last synced.
@@ -1651,23 +1667,27 @@
     return newlyUnlocked;
   }
 
-  // Splits S.badges into the per-person shape. On the very first run after
-  // v126b, any prior unlocks are dropped (both the legacy flat household
-  // dict AND the briefly-shipped v126a "duplicated to both" shape) and
-  // evaluateBadges() re-derives each person's earned set from real
-  // per-person completion history. After that, this just ensures shape.
+  // Always normalises S.badges to {"0":{...},"1":{...}} and drops any
+  // sibling keys. The drop matters: a remote document written by a pre-v127
+  // client still carries the legacy flat {firstSpark:ts,...} shape, so each
+  // pullState/applyDoc otherwise leaks those keys back in and evaluateBadges
+  // re-fires the unlock popup on every load. On the very first run after
+  // v127 we also wipe whatever was in the per-person buckets (since v126a
+  // duplicated unlocks to BOTH people incorrectly) and let evaluateBadges
+  // re-derive each person's earned set from real completion history.
   function migrateBadgesToPerPerson(){
     var FLAG = "nh_badges_perperson_v126b";
     var done = false;
     try { done = localStorage.getItem(FLAG) === "1"; } catch(e){}
+    var src = (S.badges && typeof S.badges === "object") ? S.badges : {};
+    var b0 = (src["0"] && typeof src["0"] === "object") ? src["0"] : {};
+    var b1 = (src["1"] && typeof src["1"] === "object") ? src["1"] : {};
     if(!done){
-      S.badges = { "0":{}, "1":{} };
+      b0 = {};
+      b1 = {};
       try { localStorage.setItem(FLAG, "1"); } catch(e){}
-      return;
     }
-    if(!S.badges || typeof S.badges !== "object") S.badges = { "0":{}, "1":{} };
-    if(!S.badges["0"] || typeof S.badges["0"] !== "object") S.badges["0"] = {};
-    if(!S.badges["1"] || typeof S.badges["1"] !== "object") S.badges["1"] = {};
+    S.badges = { "0": b0, "1": b1 };
   }
 
   function choresForDay(date){
@@ -3798,7 +3818,11 @@
   ensureOccurrences();
   clampBalances();
   updateMaxStreaks();
-  evaluateBadges();
+  var bootUnlocked = evaluateBadges();
+  // Persist whatever the migration / evaluation produced so the popup
+  // doesn't fire again next load if the user dismisses without tapping
+  // anything else that triggers save().
+  if(bootUnlocked && bootUnlocked.length) saveLocal();
   render();
   if(isAuthed()){
     pullState();
