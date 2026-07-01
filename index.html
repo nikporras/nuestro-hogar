@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v128";
+  var APP_VERSION = "v129";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -771,7 +771,8 @@
     if(!S.occurrences) return;
     var children = S.chores.filter(function(c){ return c.linkedAfter && c.linkedAfter.taskId; });
     if(children.length === 0) return;
-    // 1) drop orphans — leave done ones alone so completion history stays.
+    // 1) drop orphans — leave done ones alone so completion history stays,
+    // and leave manual:true ones alone (user explicitly placed an extra day).
     children.forEach(function(c){
       var n = c.linkedAfter.days || 1;
       var idStr = String(c.id);
@@ -779,7 +780,7 @@
         var dash = key.indexOf("_"); if(dash < 0) return;
         if(key.slice(0, dash) !== idStr) return;
         var o = S.occurrences[key];
-        if(!o || o.done || o.tombstone) return;
+        if(!o || o.done || o.tombstone || o.manual) return;
         var dStr = key.slice(dash + 1);
         var sp = dStr.split("-");
         var d = new Date(+sp[0], (+sp[1])-1, +sp[2]);
@@ -2764,9 +2765,126 @@
       h("div",{style:"font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px;", text:"What kind?"}),
       bigBtn("🔁","Recurring task","Repeats on the days you set",true,openAdd),
       bigBtn("✓","One-time task","A single thing to do, then it's gone",false,openOneTime),
+      bigBtn("📌","Extra day of a task","One more instance of a task you already have — the series stays untouched",false,openAddInstance),
       h("button",{class:"btn ghost", style:"width:100%;margin-top:6px;", onClick:close, text:"Cancel"})
     );
     return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay") close(); }}, sheet);
+  }
+
+  // ---------- Extra instance of an existing task ----------
+  // Covers two gaps: re-adding a single day the user ×-skipped away, and
+  // dropping an extra one-off instance of any existing task onto a date —
+  // all without editing the series (weekdays stay, history stays).
+  var addInstCtx = null;
+  function openAddInstance(){
+    addInstCtx = { choreId: null, date: ymd(TODAY), calBase: null, assignee: null };
+    S.modal = "addInstance"; render();
+  }
+  function closeAddInstance(){ addInstCtx = null; S.modal = null; render(); }
+  function commitAddInstance(){
+    var ctx = addInstCtx;
+    var ch = ctx && findChore(ctx.choreId);
+    if(!ch){ alert("Pick a task first."); return; }
+    var day = parseYmd(ctx.date) || TODAY;
+    var key = occKey(ch.id, day);
+    var existing = S.occurrences[key];
+    if(existing && existing.done){
+      alert("'"+ch.name+"' is already done on that day — that stays as it is.");
+      return;
+    }
+    if(existing && !existing.tombstone){
+      alert("'"+ch.name+"' is already scheduled on that day.");
+      return;
+    }
+    // Overwrites only tombstones / nothing. manual:true keeps syncAfterChores
+    // from sweeping it when the task is a linked-after child; pinned:true
+    // keeps the series generator's hands off it.
+    S.occurrences[key] = { assignee: ctx.assignee, done: false, doneAt: null, pinned: true, manual: true };
+    // A done-and-archived one-time comes back into view for its new day.
+    if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
+    addInstCtx = null; S.modal = null;
+    save(); render();
+  }
+  function modalAddInstance(){
+    if(!addInstCtx) return h("div");
+    var ctx = addInstCtx;
+    function field(label, body){
+      return h("div",{style:"margin-top:14px;"},
+        h("div",{style:"font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;", text:label}),
+        body);
+    }
+    // Task picker — every task, recurring and one-time alike.
+    var list = h("div",{style:"display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;"});
+    var sorted = S.chores.slice().sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+    sorted.forEach(function(c){
+      var on = ctx.choreId === c.id;
+      list.appendChild(h("button",{
+        style:"display:flex;align-items:center;gap:8px;text-align:left;padding:10px 12px;border:1.5px solid "+(on?"var(--accent1)":"var(--border)")+";border-radius:11px;background:"+(on?"var(--soft-accent)":"var(--input-bg)")+";color:"+(on?"var(--soft-accent-text)":"var(--text)")+";font:inherit;font-weight:700;font-size:13.5px;cursor:pointer;",
+        onClick:function(){
+          ctx.choreId = c.id;
+          // Seed who-does-it from the task's default; user can still change it.
+          ctx.assignee = (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
+          render();
+        }
+      },
+        h("span",{text:(c.icon||"🧽")}),
+        h("span",{style:"flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", text:c.name})
+      ));
+    });
+    // Who
+    var assignSeg = h("div",{class:"seg"});
+    [null, 0, 1].forEach(function(p){
+      var on = (ctx.assignee === p);
+      assignSeg.appendChild(h("button",{class:(on?"on":""),
+        onClick:function(){ ctx.assignee = p; render(); },
+        text:(p == null ? "Anyone" : S.names[p])}));
+    });
+    // Date — same calendar widget as the one-time editor.
+    var selDay = parseYmd(ctx.date) || TODAY;
+    var calBase = ctx.calBase || new Date(selDay.getFullYear(), selDay.getMonth(), 1);
+    var calWrap = h("div",{style:"border:1.5px solid var(--border);border-radius:11px;padding:10px;background:var(--input-bg);"});
+    calWrap.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"},
+      h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+        onClick:function(){ ctx.calBase = new Date(calBase.getFullYear(), calBase.getMonth()-1, 1); render(); }, text:"‹"}),
+      h("div",{style:"font-weight:800;font-size:13.5px;", text:MONTHS[calBase.getMonth()]+" "+calBase.getFullYear()}),
+      h("button",{style:"border:none;background:var(--surface);color:var(--accent2);font-size:16px;font-weight:800;width:30px;height:30px;border-radius:50%;cursor:pointer;",
+        onClick:function(){ ctx.calBase = new Date(calBase.getFullYear(), calBase.getMonth()+1, 1); render(); }, text:"›"})
+    ));
+    var head=h("div",{class:"month-head"});
+    ["M","T","W","T","F","S","S"].forEach(function(x){ head.appendChild(h("div",{text:x})); });
+    calWrap.appendChild(head);
+    var grid=h("div",{class:"month-grid"});
+    var lead=(calBase.getDay()+6)%7;
+    var gridStart=addDays(calBase,-lead);
+    for(var gi=0; gi<42; gi++){
+      (function(){
+        var day=addDays(gridStart,gi);
+        var out=day.getMonth()!==calBase.getMonth();
+        var past=day<TODAY;
+        var isSel=sameDay(day,selDay);
+        grid.appendChild(h("div",{
+          class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
+          style: past&&!out ? "opacity:0.35;" : "",
+          onClick: (out||past) ? null : function(){ ctx.date=ymd(day); render(); }
+        }, h("div",{class:"d",text:String(day.getDate())})));
+      })();
+    }
+    calWrap.appendChild(grid);
+    var body = [
+      field("Which task", list),
+      field("Who does it", assignSeg),
+      field("On day", calWrap),
+      h("div",{class:"modal-actions"},
+        h("button",{class:"btn ghost", text:"Cancel", onClick:closeAddInstance}),
+        h("button",{class:"btn primary", text:"Add day", onClick:commitAddInstance})
+      )
+    ];
+    var topBar = h("div",{class:"sheet-top"},
+      h("div",{class:"grab"}),
+      h("h3",{text:"Extra day of a task"}));
+    var sheet = h("div",{class:"modal tall"}, topBar, h("div",{class:"modal-scroll"}, body));
+    attachSwipeClose(topBar, sheet, closeAddInstance);
+    return h("div",{class:"overlay", onClick:function(e){ if(e.target.className==="overlay") closeAddInstance(); }}, sheet);
   }
 
   function openOneTime(){
@@ -3795,6 +3913,7 @@
     root.appendChild(nav());
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="addChoose") root.appendChild(modalAddChoose());
+    if(S.modal==="addInstance") root.appendChild(modalAddInstance());
     if(S.modal==="rebalance") root.appendChild(modalRebalance());
     if(S.modal==="names") root.appendChild(modalNames());
     if(S.modal==="reminder") root.appendChild(modalReminder());
