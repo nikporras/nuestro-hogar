@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v130";
+  var APP_VERSION = "v131";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -424,6 +424,31 @@
   // safe to reference here because this IIFE runs at script-execution time
   // *after* all `function` declarations are hoisted.
   migrateBadgesToPerPerson();
+
+  // One-time (v131): existing Biweekly/Monthly tasks were created in "On set
+  // dates" (calendar) mode, which pre-fills ~8 weeks of cards and spills the
+  // next instances into next month. The expected behaviour is: show only the
+  // next one, and generate the following one when you mark it done. Flip every
+  // such task to after-completion mode and trim the surplus future cards.
+  // Guarded by a flag so someone who deliberately re-picks calendar mode later
+  // isn't re-migrated. Linked-after children and one-times are left alone.
+  (function(){
+    try{
+      if(localStorage.getItem("nh_biweekly_aftercompletion_migrated")) return;
+      var changed = false;
+      S.chores.forEach(function(c){
+        if(c.kind === "oneTime") return;
+        if(c.linkedAfter && c.linkedAfter.taskId) return;
+        if(c.freq !== "Biweekly" && c.freq !== "Monthly") return;
+        if(c.recurrenceMode === "afterCompletion") return;
+        c.recurrenceMode = "afterCompletion";
+        trimToSingleUpcoming(c);
+        changed = true;
+      });
+      localStorage.setItem("nh_biweekly_aftercompletion_migrated","1");
+      if(changed) save();
+    }catch(e){}
+  })();
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
   function saveLocal(){ try{
@@ -1003,6 +1028,30 @@
       var dateStr = key.slice(dash + 1);
       if(dateStr < cutoff) delete S.occurrences[key];
     });
+  }
+  // After-completion tasks keep exactly ONE live card. Deletes every not-done,
+  // non-tombstone, non-manual future occurrence except the earliest one on or
+  // after today, so switching a biweekly/monthly task into after-completion
+  // mode (or the migration below) doesn't leave a trail of pre-generated cards
+  // across next month. Done, past, and manually-placed extra days are left
+  // alone — history and explicit "Extra day" placements stay.
+  function trimToSingleUpcoming(c){
+    if(!S.occurrences) return;
+    var idStr = String(c.id);
+    var todayStr = ymd(TODAY);
+    var upcoming = [];
+    Object.keys(S.occurrences).forEach(function(key){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var o = S.occurrences[key];
+      if(!o || o.tombstone || o.done || o.manual) return;
+      var dStr = key.slice(dash + 1);
+      if(dStr < todayStr) return; // leave past-but-undone alone
+      upcoming.push({ key: key, dStr: dStr });
+    });
+    if(upcoming.length <= 1) return;
+    upcoming.sort(function(a,b){ return a.dStr < b.dStr ? -1 : (a.dStr > b.dStr ? 1 : 0); });
+    for(var i = 1; i < upcoming.length; i++){ delete S.occurrences[upcoming[i].key]; }
   }
 
   // ---------- Supabase: magic-link auth + single shared JSON document sync ----------
@@ -2831,7 +2880,7 @@
   function openAdd(){
     editingId=null;
     editorCalBase = null;
-    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], startDate:null, effort:2, pinned:false, rotate:true, linkedAfter:null, notes:"", recurrenceMode:"calendar", isOneTime:false, oneTimeDate:ymd(TODAY) };
+    draft={ name:"", freq:"Daily", assignee:null, icon:"", weekdays:[], startDate:null, effort:2, pinned:false, rotate:true, linkedAfter:null, notes:"", recurrenceMode:"afterCompletion", isOneTime:false, oneTimeDate:ymd(TODAY) };
     draftOriginal=JSON.stringify(draft);
     S.modal="add"; render();
   }
@@ -3061,8 +3110,13 @@
       delete target.weekdays; delete target.recurrenceMode;
     } else { // Biweekly / Monthly
       target.startDate = d.startDate || ymd(TODAY);
-      target.recurrenceMode = d.recurrenceMode || "calendar";
+      target.recurrenceMode = d.recurrenceMode || "afterCompletion";
       delete target.weekdays;
+      // In after-completion mode only one card should ever be live. If the
+      // user just switched an existing task into this mode (or edited it),
+      // trim any surplus future cards so the board stops showing next
+      // month's biweekly slots.
+      if(target.recurrenceMode === "afterCompletion") trimToSingleUpcoming(target);
     }
     // When you edit the template, propagate the new default assignee/lock to upcoming
     // non-done occurrences so the change is visible immediately. Past + done are left
@@ -3315,7 +3369,7 @@
         // Repeat mode: fixed cycle (default — predictable rhythm) vs after
         // completion (next one counts from when you actually mark it done).
         var modeSeg=h("div",{class:"seg"});
-        var rMode = d.recurrenceMode || "calendar";
+        var rMode = d.recurrenceMode || "afterCompletion";
         [["calendar","On set dates"],["afterCompletion","After I mark done"]].forEach(function(pair){
           modeSeg.appendChild(h("button",{class:(rMode===pair[0]?"on":""),
             onClick:function(){ d.recurrenceMode=pair[0]; render(); },
