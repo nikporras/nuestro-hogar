@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v132";
+  var APP_VERSION = "v133";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -392,6 +392,11 @@
     rumMilestonesHit: load("nh_rumMilestonesHit", { "0": [], "1": [] }),
     badgeBaselineBalances: load("nh_badgeBaselineBalances", [0,0]),
     holidayMode: load("nh_holidayMode", false),
+    // Doc-level flag (synced): have Biweekly/Monthly tasks been converted to
+    // after-completion mode? Lives in the shared document — NOT a per-device
+    // localStorage flag — so the conversion survives a sync from a peer that
+    // still holds calendar-mode data. See migrateBiweeklyAfterCompletion.
+    biweeklyModeMigrated: load("nh_biweeklyModeMigrated", false),
     // Default to the current month so existing installs don't fire a silent
     // rebalance on first load — the user opts in for THIS month via the
     // explicit button. Future month rollovers will tick this forward.
@@ -425,30 +430,32 @@
   // *after* all `function` declarations are hoisted.
   migrateBadgesToPerPerson();
 
-  // One-time (v131): existing Biweekly/Monthly tasks were created in "On set
-  // dates" (calendar) mode, which pre-fills ~8 weeks of cards and spills the
-  // next instances into next month. The expected behaviour is: show only the
-  // next one, and generate the following one when you mark it done. Flip every
-  // such task to after-completion mode and trim the surplus future cards.
-  // Guarded by a flag so someone who deliberately re-picks calendar mode later
-  // isn't re-migrated. Linked-after children and one-times are left alone.
-  (function(){
-    try{
-      if(localStorage.getItem("nh_biweekly_aftercompletion_migrated")) return;
-      var changed = false;
-      S.chores.forEach(function(c){
-        if(c.kind === "oneTime") return;
-        if(c.linkedAfter && c.linkedAfter.taskId) return;
-        if(c.freq !== "Biweekly" && c.freq !== "Monthly") return;
-        if(c.recurrenceMode === "afterCompletion") return;
-        c.recurrenceMode = "afterCompletion";
-        trimToSingleUpcoming(c);
-        changed = true;
-      });
-      localStorage.setItem("nh_biweekly_aftercompletion_migrated","1");
-      if(changed) save();
-    }catch(e){}
-  })();
+  // Convert existing Biweekly/Monthly tasks from "On set dates" (calendar)
+  // mode — which pre-fills ~8 weeks of cards and marches the next instances
+  // into following months — to after-completion mode, where only the next
+  // card shows and completing it schedules the following one. Trims the
+  // surplus future cards on conversion.
+  //
+  // The guard (S.biweeklyModeMigrated) lives in the SYNCED document, not in
+  // per-device localStorage. That's the crucial fix: v131/v132 used a device
+  // flag, so the local conversion got clobbered when the initial pull adopted
+  // a peer's still-calendar-mode data — and the device flag then stopped it
+  // ever retrying. A doc-level flag travels with the data, so whichever copy
+  // wins the sync carries "already converted?" with it, and applyDoc re-runs
+  // this on freshly-pulled calendar data. Returns true if it changed anything.
+  function migrateBiweeklyAfterCompletion(){
+    if(S.biweeklyModeMigrated) return false;
+    (S.chores || []).forEach(function(c){
+      if(c.kind === "oneTime") return;
+      if(c.linkedAfter && c.linkedAfter.taskId) return;
+      if(c.freq !== "Biweekly" && c.freq !== "Monthly") return;
+      if(c.recurrenceMode !== "afterCompletion") c.recurrenceMode = "afterCompletion";
+      trimToSingleUpcoming(c);
+    });
+    S.biweeklyModeMigrated = true;
+    return true; // the flag flip (and any trims) must persist + sync
+  }
+  if(migrateBiweeklyAfterCompletion()) save();
 
   function load(k,def){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } }
   function saveLocal(){ try{
@@ -469,6 +476,7 @@
     localStorage.setItem("nh_badgeBaselineBalances", JSON.stringify(S.badgeBaselineBalances));
     localStorage.setItem("nh_holidayMode", JSON.stringify(!!S.holidayMode));
     localStorage.setItem("nh_lastBalanceMonth", JSON.stringify(S.lastBalanceMonth || ""));
+    localStorage.setItem("nh_biweeklyModeMigrated", JSON.stringify(!!S.biweeklyModeMigrated));
   }catch(e){} }
   function save(){
     ensureOccurrences();
@@ -1136,7 +1144,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:!!S.holidayMode, lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:!!S.holidayMode, lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit, biweeklyModeMigrated:!!S.biweeklyModeMigrated }; }
   function applyDoc(d){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
@@ -1167,6 +1175,12 @@
     if(typeof d.lastBalanceMonth==="string") S.lastBalanceMonth=d.lastBalanceMonth;
     if(d.rumMilestonesHit && typeof d.rumMilestonesHit==="object") S.rumMilestonesHit=d.rumMilestonesHit;
     if(Array.isArray(d.badgeBaselineBalances)&&d.badgeBaselineBalances.length===2) S.badgeBaselineBalances=d.badgeBaselineBalances;
+    // Adopt the doc-level biweekly-conversion flag. If the pulled document is
+    // still in calendar mode (flag false/absent), run the conversion on the
+    // freshly-adopted data right here — this is what makes the migration
+    // survive the initial pull that used to clobber the local one-time run.
+    S.biweeklyModeMigrated = !!d.biweeklyModeMigrated;
+    var biweeklyConverted = migrateBiweeklyAfterCompletion();
     // After a pull from a phone still on v1, occurrences may be missing —
     // regenerate so the window stays full locally. Also refresh derived state
     // (streak personal bests, badge unlocks) so the partner's work shows on this
@@ -1176,9 +1190,10 @@
     invalidateBadgeStats(); // remote may have new completions — cache is stale
     updateMaxStreaks();
     var newlyUnlocked = evaluateBadges();
-    // If the remote was dirty OR we unlocked something new, push the clean
-    // doc back so other devices (and the next pull) see the right state.
-    if(badgesDirty || (newlyUnlocked && newlyUnlocked.length)){
+    // If the remote was dirty, we converted biweekly tasks, OR we unlocked
+    // something new, push the corrected doc back so other devices (and the
+    // next pull) see the right state.
+    if(badgesDirty || biweeklyConverted || (newlyUnlocked && newlyUnlocked.length)){
       saveLocal();
       pushState();
     }
