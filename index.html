@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v129";
+  var APP_VERSION = "v130";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1976,6 +1976,72 @@
     occSheetCtx.date = new Date(toDate);
     save(); render();
   }
+  // A move can shift the whole series ("this and future days") only when the
+  // chore actually HAS a forward series to shift: calendar-mode recurring,
+  // not one-time, not derived from a parent, not after-completion (those
+  // re-date themselves from the moment you finish).
+  function seriesShiftEligible(ch){
+    if(ch.kind === "oneTime") return false;
+    if(ch.linkedAfter && ch.linkedAfter.taskId) return false;
+    if(ch.recurrenceMode === "afterCompletion") return false;
+    if(ch.freq === "Weekly") return !!(ch.weekdays && ch.weekdays.length);
+    if(ch.freq === "Biweekly" || ch.freq === "Monthly") return !!ch.startDate;
+    return false; // Daily: every day is scheduled, nothing to shift
+  }
+  // "This and future days": move the tapped occurrence AND every later
+  // not-done occurrence in the same lane by the same number of days, each
+  // keeping its own assignee. Then permanently rewrite the series (weekday
+  // swap for Weekly, anchor shift for Biweekly/Monthly) so the generator
+  // continues on the new rhythm. Done occurrences never move — progress
+  // stays exactly where it was earned.
+  function moveOccurrenceSeries(ch, fromDate, toDate){
+    if(sameDay(fromDate, toDate)) return;
+    if(isDone(ch, fromDate)){ alert("This day is already done — undo it first to move it."); return; }
+    var deltaDays = Math.round((toDate - fromDate) / 86400000);
+    var fromStr = ymd(fromDate);
+    var idStr = String(ch.id);
+    // Collect the future lane BEFORE writing anything.
+    var future = [];
+    Object.keys(S.occurrences).forEach(function(key){
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      if(key.slice(0, dash) !== idStr) return;
+      var dStr = key.slice(dash + 1);
+      if(dStr <= fromStr) return;
+      var o = S.occurrences[key];
+      if(!o || o.tombstone || o.done) return;
+      var d = parseYmd(dStr); if(!d) return;
+      // Weekly: only the moved weekday's lane shifts — a Mon+Thu task moved
+      // on a Monday leaves the Thursday cards alone.
+      if(ch.freq === "Weekly" && d.getDay() !== fromDate.getDay()) return;
+      future.push({ key: key, d: d, assignee: o.assignee });
+    });
+    function place(d, assignee){
+      var k = occKey(ch.id, d);
+      var ex = S.occurrences[k];
+      if(ex && !ex.tombstone) return; // lands on an existing card — merge
+      S.occurrences[k] = { assignee: assignee, done: false, doneAt: null, pinned: true };
+    }
+    // The tapped card.
+    var srcAssignee = occAssignee(ch, fromDate);
+    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true };
+    place(toDate, srcAssignee);
+    // The future lane, each keeping its own person.
+    future.forEach(function(f){
+      S.occurrences[f.key] = { tombstone: true };
+      place(addDays(f.d, deltaDays), f.assignee);
+    });
+    // Permanent series rewrite.
+    if(ch.freq === "Weekly" && Array.isArray(ch.weekdays)){
+      var fromDow = fromDate.getDay(), toDow = toDate.getDay();
+      var nw = ch.weekdays.map(function(w){ return w === fromDow ? toDow : w; });
+      ch.weekdays = nw.filter(function(w, i){ return nw.indexOf(w) === i; });
+    } else if(ch.startDate){
+      var base = parseYmd(ch.startDate);
+      if(base) ch.startDate = ymd(addDays(base, deltaDays));
+    }
+    if(occSheetCtx){ occSheetCtx.date = new Date(toDate); occSheetCtx.pendingMove = null; }
+    save(); render();
+  }
   function modalOccurrence(){
     if(!occSheetCtx) return h("div");
     var ch = findChore(occSheetCtx.choreId);
@@ -2027,12 +2093,20 @@
         (function(){
           var d = addDays(rowStart, i);
           var picked = sameDay(d, date);
+          var pending = !!(occSheetCtx.pendingMove && sameDay(d, occSheetCtx.pendingMove));
           var disabled = done;
-          var bg = picked ? "var(--accent1)" : "var(--surface)";
-          var fg = picked ? "#fff" : (disabled ? "var(--muted)" : "var(--text)");
+          var bg = picked ? "var(--accent1)" : (pending ? "var(--soft-accent)" : "var(--surface)");
+          var fg = picked ? "#fff" : (pending ? "var(--soft-accent-text)" : (disabled ? "var(--muted)" : "var(--text)"));
           row.appendChild(h("button",{
-            style:"flex:1;padding:6px 0;border:1.5px solid "+(picked?"var(--accent1)":"var(--border)")+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
-            onClick: disabled ? null : function(){ moveOccurrence(ch, date, d); }
+            style:"flex:1;padding:6px 0;border:1.5px solid "+((picked||pending)?"var(--accent1)":"var(--border)")+";border-radius:9px;background:"+bg+";color:"+fg+";font:inherit;font-weight:700;font-size:11px;cursor:"+(disabled?"default":"pointer")+";opacity:"+(disabled?"0.4":"1")+";display:flex;flex-direction:column;align-items:center;gap:1px;",
+            onClick: disabled ? null : function(){
+              if(sameDay(d, date)) return;
+              // Recurring calendar tasks get the two-way choice; everything
+              // else (one-time, linked, after-completion, daily) moves the
+              // single day immediately like before.
+              if(seriesShiftEligible(ch)){ occSheetCtx.pendingMove = new Date(d); render(); }
+              else moveOccurrence(ch, date, d);
+            }
           },
             h("span",{style:"font-size:10px;font-weight:700;opacity:0.85;", text:DOW_SHORT[d.getDay()].slice(0,1)}),
             h("span",{style:"font-size:13px;font-weight:800;", text:String(d.getDate())})
@@ -2041,6 +2115,24 @@
       }
       dayPick.appendChild(wrapEl);
     });
+    // Pending-move chooser — the Google-Calendar-style question, asked only
+    // once a target day is tapped for a task that has a forward series.
+    if(occSheetCtx.pendingMove){
+      var pm = occSheetCtx.pendingMove;
+      dayPick.appendChild(h("div",{style:"margin-top:8px;padding:11px 12px;border:1.5px solid var(--accent1);border-radius:11px;background:var(--soft-accent);"},
+        h("div",{style:"font-size:12.5px;font-weight:700;color:var(--soft-accent-text);margin-bottom:8px;",
+          text:"Move to "+DOW_SHORT[pm.getDay()]+" "+pm.getDate()+" "+MONTHS[pm.getMonth()].slice(0,3)+"?"}),
+        h("button",{class:"btn primary", style:"width:100%;margin-bottom:6px;padding:11px;",
+          onClick:function(){ var t=pm; occSheetCtx.pendingMove=null; moveOccurrence(ch, date, t); },
+          text:"Only this day"}),
+        h("button",{class:"btn primary", style:"width:100%;margin-bottom:6px;padding:11px;background:var(--accent2);",
+          onClick:function(){ moveOccurrenceSeries(ch, date, pm); },
+          text:"This + future days"}),
+        h("button",{class:"btn ghost", style:"width:100%;padding:10px;",
+          onClick:function(){ occSheetCtx.pendingMove=null; render(); },
+          text:"Cancel"})
+      ));
+    }
     var skipBtn = h("button",{
       style:"width:100%;padding:11px;border:1.5px solid var(--danger);background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;font-size:13px;border-radius:11px;cursor:pointer;margin-top:14px;",
       onClick:function(){
