@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v131";
+  var APP_VERSION = "v132";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -742,8 +742,15 @@
       // After-completion cycles self-perpetuate from toggleDone; the
       // generator only seeds the very first card.
       if((sch.kind === "biweekly" || sch.kind === "monthly") && c.recurrenceMode === "afterCompletion"){
-        if(hasOccOnOrAfter(c, TODAY)) return;
+        // Already has an OPEN card — future OR overdue? Leave it. This is the
+        // single live card; if it's overdue (you didn't do it on the day) it
+        // just waits until you mark it done. Without this, an overdue card
+        // made hasOccOnOrAfter false and a fresh card got seeded at today,
+        // sitting right next to the un-done one — that's the "biweekly tasks
+        // getting close to each other" bug.
+        if(latestOccFor(c, function(o){ return o && !o.tombstone && !o.done; })) return;
         if(latestOccFor(c, function(o){ return !!o.done; })) return; // history exists; done-marking drives it
+        if(hasOccOnOrAfter(c, TODAY)) return; // a tombstone on/after today = user skipped the seed; respect it
         var seed = parseYmd(c.startDate);
         if(!seed) return; // unscheduled — stays dormant until a date is picked
         var d0 = seed > TODAY ? seed : TODAY;
