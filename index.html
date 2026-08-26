@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v133";
+  var APP_VERSION = "v134";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -750,21 +750,40 @@
       // After-completion cycles self-perpetuate from toggleDone; the
       // generator only seeds the very first card.
       if((sch.kind === "biweekly" || sch.kind === "monthly") && c.recurrenceMode === "afterCompletion"){
-        // Already has an OPEN card — future OR overdue? Leave it. This is the
-        // single live card; if it's overdue (you didn't do it on the day) it
-        // just waits until you mark it done. Without this, an overdue card
-        // made hasOccOnOrAfter false and a fresh card got seeded at today,
-        // sitting right next to the un-done one — that's the "biweekly tasks
-        // getting close to each other" bug.
+        // Exactly one live card at a time. If an OPEN (undone, non-tombstone)
+        // card already exists — future OR overdue — leave it. It just waits
+        // until it's marked done. (Prevents a second card spawning next to an
+        // un-done one — the "biweekly getting close together" bug.)
         if(latestOccFor(c, function(o){ return o && !o.tombstone && !o.done; })) return;
-        if(latestOccFor(c, function(o){ return !!o.done; })) return; // history exists; done-marking drives it
-        if(hasOccOnOrAfter(c, TODAY)) return; // a tombstone on/after today = user skipped the seed; respect it
-        var seed = parseYmd(c.startDate);
-        if(!seed) return; // unscheduled — stays dormant until a date is picked
-        var d0 = seed > TODAY ? seed : TODAY;
+        // No open card. Advance the cycle: base the next date on the most
+        // recent occurrence of ANY kind — done OR skipped(tombstone) — so
+        // completing AND skipping both keep the task alive. Skipping used to
+        // KILL it (the tombstone left no open card and nothing rescheduled →
+        // the task vanished and never came back). Fall back to the start date
+        // for a task that has never had an occurrence.
+        var step = sch.kind === "biweekly" ? 14 : (c.afterCompletionDays || 28);
+        var last = latestOccFor(c, function(o){ return !!o; });
+        var nextDate;
+        if(last && last.dStr){
+          var ld = parseYmd(last.dStr);
+          nextDate = ld ? addDays(ld, step) : new Date(TODAY);
+        } else {
+          var seed = parseYmd(c.startDate);
+          if(!seed) return; // never scheduled — stays dormant until a date is picked
+          nextDate = seed;
+        }
+        if(nextDate < TODAY) nextDate = new Date(TODAY);
+        // Walk past any tombstoned dates so a run of skips steps forward by
+        // whole cycles instead of landing back on a skipped day.
+        var guard = 0;
+        while(S.occurrences[occKey(c.id, nextDate)] && S.occurrences[occKey(c.id, nextDate)].tombstone && guard < 120){
+          nextDate = addDays(nextDate, step); guard++;
+        }
+        var atNext = S.occurrences[occKey(c.id, nextDate)];
+        if(atNext && !atNext.tombstone) return; // a real card is already there
         var seedAssignee = c.rotate ? balancedSeedAssignee(c)
           : (c.assignee === 0 || c.assignee === 1) ? c.assignee : null;
-        S.occurrences[occKey(c.id, d0)] = { assignee: seedAssignee, done:false, doneAt:null, pinned:true };
+        S.occurrences[occKey(c.id, nextDate)] = { assignee: seedAssignee, done:false, doneAt:null, pinned:true };
         return;
       }
       // Calendar series: collect this chore's dates inside the window.
