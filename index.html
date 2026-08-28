@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v134";
+  var APP_VERSION = "v135";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1734,6 +1734,34 @@
     save();
     render();
     alert("Done. All tasks are unscheduled — open each one on the Tasks tab to set its days again.");
+  }
+
+  // Bring the full recurring schedule back after a big manual clean-up (lots of
+  // × skips). Clears every FUTURE not-done occurrence — the skip-tombstones and
+  // any stale leftover cards — from the day after tomorrow onward, then lets the
+  // series generator refill weekly/daily on their set days and give each
+  // biweekly/monthly its single next card. Today and tomorrow are preserved
+  // exactly (the user explicitly wanted tomorrow untouched), and every DONE
+  // occurrence is kept as history.
+  function restoreSchedule(){
+    if(!confirm("Bring back your full recurring schedule? Weekly and daily tasks refill their normal days, and biweekly/monthly show only their next card. Tomorrow's tasks are kept exactly as they are, and completed history stays. This clears any 'skip' marks on future days.")) return;
+    var keepThroughStr = ymd(addDays(TODAY, 1)); // today + tomorrow untouched
+    if(S.occurrences){
+      Object.keys(S.occurrences).forEach(function(key){
+        var dash = key.indexOf("_"); if(dash < 0) return;
+        var dStr = key.slice(dash + 1);
+        if(dStr <= keepThroughStr) return;      // leave past, today, tomorrow alone
+        var o = S.occurrences[key];
+        if(!o || o.done) return;                // keep completed cards (history)
+        delete S.occurrences[key];              // drop skips + undone future cards
+      });
+    }
+    // If a prior "Unschedule all" set this, lift it so the board isn't held empty.
+    S.scheduleClearedAt = null;
+    invalidateBadgeStats();
+    save();   // materialiseSeries refills weekly/daily + seeds biweekly/monthly
+    render();
+    alert("Done — your schedule is back. Tomorrow's tasks are untouched.");
   }
 
   // Called from save(); checks every badge predicate per person and records the
@@ -3589,6 +3617,16 @@
         weeklyRow
       );
     }
+    // Maintenance — constructive, not destructive: rebuild the recurring
+    // schedule after a big manual clean-up without touching tomorrow or history.
+    children.push(
+      h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
+      h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px;", text:"Schedule"}),
+      h("div",{style:"margin-bottom:12px;"},
+        h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--accent1);border-radius:11px;background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;cursor:pointer;", onClick:restoreSchedule, text:"↻ Restore full schedule" }),
+        h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Refills weekly/daily tasks on their days and shows each biweekly/monthly's next card. Tomorrow's tasks and completed history stay untouched."})
+      )
+    );
     // Reset zone — two clearly-different actions, no overlap. 'Reset badge
     // progress' is gone (Wipe earnings does it as a strict superset).
     function resetBtn(label, hint, onClick){
