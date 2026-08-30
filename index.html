@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v135";
+  var APP_VERSION = "v136";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3074,8 +3074,10 @@
         var isSel=sameDay(day,selDay);
         grid.appendChild(h("div",{
           class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
-          style: past&&!out ? "opacity:0.35;" : "",
-          onClick: (out||past) ? null : function(){ ctx.date=ymd(day); render(); }
+          // Past days are allowed (log a task you did earlier); keep them
+          // subtly dimmed so they read as past but stay tappable.
+          style: past&&!out ? "opacity:0.6;" : "",
+          onClick: out ? null : function(){ ctx.date=ymd(day); render(); }
         }, h("div",{class:"d",text:String(day.getDate())})));
       })();
     }
@@ -3316,8 +3318,9 @@
           var isSel=sameDay(day,ot);
           grid.appendChild(h("div",{
             class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
-            style: past&&!out ? "opacity:0.35;" : "",
-            onClick: (out||past) ? null : function(){ d.oneTimeDate=ymd(day); render(); }
+            // Past days allowed — log a one-time task you already did.
+            style: past&&!out ? "opacity:0.6;" : "",
+            onClick: out ? null : function(){ d.oneTimeDate=ymd(day); render(); }
           }, h("div",{class:"d",text:String(day.getDate())})));
         })();
       }
@@ -3424,8 +3427,9 @@
             var isSel=selDate && sameDay(day,selDate);
             grid.appendChild(h("div",{
               class:"mcell"+(out?" out":"")+(sameDay(day,TODAY)?" today":"")+(isSel?" sel":""),
-              style: past&&!out ? "opacity:0.35;" : "",
-              onClick: (out||past) ? null : function(){ d.startDate=ymd(day); render(); }
+              // Past days allowed — anchor a recurring cadence to a past date.
+              style: past&&!out ? "opacity:0.6;" : "",
+              onClick: out ? null : function(){ d.startDate=ymd(day); render(); }
             }, h("div",{class:"d",text:String(day.getDate())})));
           })();
         }
