@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v136";
+  var APP_VERSION = "v137";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1407,6 +1407,33 @@
       if(cur > (S.maxStreaks[p]||0)) S.maxStreaks[p] = cur;
     });
   }
+  // Mirrors computeStreak's walk-back and returns the PAST day that broke the
+  // streak — the first day going back where the person had a task assigned to
+  // them that was never marked done — plus which tasks were unchecked. Returns
+  // null when nothing broke it (streak runs clean back to the baseline). Used
+  // by the Stats "why did my streak break?" diagnostic so a missed task (often
+  // a low-frequency biweekly/monthly) can be found and marked done or skipped.
+  function streakBreaker(personIdx){
+    if(personIdx !== 0 && personIdx !== 1) return null;
+    var baseline = S.badgeBaselineDate || "";
+    for(var i = 0; i <= 365; i++){
+      var d = addDays(TODAY, -i);
+      if(baseline && ymd(d) < baseline) return null; // reached the reset floor, no break
+      var owed = 0, done = 0, undone = [];
+      for(var k = 0; k < S.chores.length; k++){
+        var c = S.chores[k];
+        if(!isDue(c, d)) continue;
+        if(occAssignee(c, d) !== personIdx) continue;
+        owed++;
+        if(isDone(c, d)) done++; else undone.push(c);
+      }
+      if(owed === 0) continue;             // neutral day
+      if(done === owed) continue;          // fully done — part of the streak
+      if(i === 0) continue;                // today still in progress — not a break
+      return { date: new Date(d), tasks: undone };
+    }
+    return null;
+  }
 
   // ---------- couple level (Phase 5) ----------
   // Lifetime points done by both, fed through level = floor(sqrt(total/25)).
@@ -2500,6 +2527,41 @@
 
   function viewLogros(){
     var wrap=h("div",{class:"content"});
+
+    // ----- Streak diagnostic — "why did my streak break?" -----
+    var sp = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : 0;
+    var curStreak = computeStreak(sp);
+    var breaker = streakBreaker(sp);
+    wrap.appendChild(h("div",{class:"section-title", text:"Your streak"}));
+    var sCard = h("div",{class:"vs-card"});
+    sCard.appendChild(h("div",{style:"display:flex;align-items:center;gap:8px;margin-bottom:"+(breaker?"10px":"0")+";"},
+      h("img",{src:"./icons/streak.png", alt:"streak", style:"width:26px;height:26px;"}),
+      h("div",{style:"font-weight:800;font-size:17px;", text: curStreak + (curStreak===1?" day":" days")}),
+      h("div",{style:"font-size:12px;color:var(--muted);margin-left:auto;", text: S.names[sp]})
+    ));
+    if(breaker){
+      var dLabel = DOW_SHORT[breaker.date.getDay()] + " " + breaker.date.getDate() + " " + MONTHS[breaker.date.getMonth()].slice(0,3);
+      var names = breaker.tasks.map(function(c){ return (c.icon?c.icon+" ":"")+c.name; }).join(", ");
+      sCard.appendChild(h("div",{style:"font-size:13px;color:var(--text);line-height:1.5;padding:10px 12px;border-radius:11px;background:var(--soft-accent);color:var(--soft-accent-text);"},
+        h("div",{style:"font-weight:700;margin-bottom:3px;", text:"It broke on "+dLabel}),
+        h("div",{text: names + (breaker.tasks.length===1?" wasn't":" weren't") + " checked off that day."}),
+        h("div",{style:"margin-top:6px;opacity:0.85;", text:"Did it? Open that day and mark it done. Didn't? Tap × to skip it. Either way your streak walks back through it."})
+      ));
+      sCard.appendChild(h("button",{
+        style:"width:100%;margin-top:10px;padding:11px;border:1.5px solid var(--accent1);border-radius:11px;background:var(--input-bg);color:var(--accent2);font:inherit;font-weight:700;cursor:pointer;",
+        onClick:function(){
+          var bd = breaker.date;
+          S.monthOffset = (bd.getFullYear()-TODAY.getFullYear())*12 + (bd.getMonth()-TODAY.getMonth());
+          S.monthSelected = ymd(bd);
+          S.tab = "month";
+          render();
+        },
+        text:"Go to "+dLabel+" →"
+      }));
+    } else {
+      sCard.appendChild(h("div",{style:"font-size:12.5px;color:var(--muted);", text: curStreak>0 ? "Going strong — nothing's broken it." : "No streak yet. Check off everything assigned to you today to start one."}));
+    }
+    wrap.appendChild(sCard);
 
     // ----- Workload split — how many tasks each person has this month -----
     var ap=monthlyTaskCounts(null); var apTot=ap[0]+ap[1]||1;
