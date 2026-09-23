@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v137";
+  var APP_VERSION = "v138";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -644,8 +644,43 @@
     //    5) sweep ancient tombstones.
     materialiseSeries();
     syncAfterChores();
+    rollForwardOverdueLinked();
     maybeMonthRolloverRebalance();
     pruneOldTombstones();
+  }
+  // Linked-after tasks ("do X after Y", e.g. fold clothes +1/+2 days after
+  // washing) are an OBLIGATION that must be completed, not a one-shot that
+  // lapses. If one isn't done on its day, it carries forward to today and
+  // keeps rolling each day until it's checked off — so it never sits undone
+  // on a past day (which would silently break the streak). The past date is
+  // tombstoned (so it reads as "not missed, just still pending") and a single
+  // rolled card lands on today, keeping the most recent overdue one's
+  // assignee. rolled:true marks it so syncAfterChores won't treat the
+  // parent-less today card as an orphan and drop it.
+  function rollForwardOverdueLinked(){
+    if(!S.occurrences) return;
+    var todayStr = ymd(TODAY);
+    var children = S.chores.filter(function(c){ return c.linkedAfter && c.linkedAfter.taskId; });
+    children.forEach(function(c){
+      var idStr = String(c.id);
+      var overdue = [];
+      Object.keys(S.occurrences).forEach(function(key){
+        var dash = key.indexOf("_"); if(dash < 0) return;
+        if(key.slice(0, dash) !== idStr) return;
+        var o = S.occurrences[key];
+        if(!o || o.tombstone || o.done) return;
+        var dStr = key.slice(dash + 1);
+        if(dStr >= todayStr) return; // only past, still-undone cards roll
+        overdue.push({ key: key, dStr: dStr, assignee: o.assignee });
+      });
+      if(overdue.length === 0) return;
+      overdue.sort(function(a,b){ return a.dStr < b.dStr ? 1 : -1; }); // newest first
+      var carryAssignee = overdue[0].assignee;
+      overdue.forEach(function(item){ S.occurrences[item.key] = { tombstone: true }; });
+      var todayKey = occKey(c.id, TODAY);
+      if(S.occurrences[todayKey]) return; // today already has a card/skip — respect it
+      S.occurrences[todayKey] = { assignee: carryAssignee, done:false, doneAt:null, pinned:true, rolled:true };
+    });
   }
   function parseYmd(s){
     if(!s) return null;
@@ -839,7 +874,10 @@
         var dash = key.indexOf("_"); if(dash < 0) return;
         if(key.slice(0, dash) !== idStr) return;
         var o = S.occurrences[key];
-        if(!o || o.done || o.tombstone || o.manual) return;
+        // Leave done/tombstone/manual alone, and rolled cards too — a rolled
+        // card sits on today with no parent at today-N, so the orphan check
+        // would wrongly delete the obligation we just carried forward.
+        if(!o || o.done || o.tombstone || o.manual || o.rolled) return;
         var dStr = key.slice(dash + 1);
         var sp = dStr.split("-");
         var d = new Date(+sp[0], (+sp[1])-1, +sp[2]);
