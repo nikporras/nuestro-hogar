@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v140";
+  var APP_VERSION = "v141";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2686,15 +2686,17 @@
     // Per-month + per-week task counts (one done occurrence = 1, regardless
     // of difficulty). Effort still drives Purrs / level / badges, just not
     // the workload split.
-    var counts=[0,0]; var perWeekMap={}; var weekStarts=[];
+    var counts=[0,0]; var perWeekMap={}; var weekStarts=[]; var perWeekItems={};
     for(var dCur=new Date(mStart); dCur<=mEnd; dCur=addDays(dCur,1)){
       var wkS=startOfWeek(dCur), wkKey=ymd(wkS);
-      if(!(wkKey in perWeekMap)){ perWeekMap[wkKey]=[0,0]; weekStarts.push(new Date(wkS)); }
-      S.chores.forEach(function(c){
-        if(!showsOnDay(c,dCur) || !isDone(c,dCur)) return;
-        var who=occAssignee(c,dCur);
-        if(who===0||who===1){ counts[who]+=1; perWeekMap[wkKey][who]+=1; }
-      });
+      if(!(wkKey in perWeekMap)){ perWeekMap[wkKey]=[0,0]; perWeekItems[wkKey]=[]; weekStarts.push(new Date(wkS)); }
+      (function(day, wk){
+        S.chores.forEach(function(c){
+          if(!showsOnDay(c,day) || !isDone(c,day)) return;
+          var who=occAssignee(c,day);
+          if(who===0||who===1){ counts[who]+=1; perWeekMap[wk][who]+=1; perWeekItems[wk].push({ date:new Date(day), chore:c, who:who }); }
+        });
+      })(new Date(dCur), wkKey);
     }
     var total=counts[0]+counts[1];
     var leader = counts[0]===counts[1] ? -1 : (counts[0]>counts[1]?0:1);
@@ -2737,9 +2739,11 @@
     });
     wrap.appendChild(card);
 
-    // Week-by-week breakdown for the selected month.
+    // Week-by-week breakdown for the selected month — tap to expand into the
+    // actual tasks each person completed that month ("who did what").
+    var totalDoneMonth = counts[0]+counts[1];
     wrap.appendChild(h("div",{class:"section-title", text:"Week by week"}));
-    var bdCard=h("div",{class:"vs-card"});
+    var bdCard=h("div",{class:"vs-card", style:"cursor:pointer;", onClick:function(){ breakdownExpanded = !breakdownExpanded; render(); }});
     var bd=h("div",{class:"breakdown"});
     var perWeek = weekStarts.map(function(wk){ return { wkStart:wk, counts:perWeekMap[ymd(wk)] }; });
     var maxWk=1; perWeek.forEach(function(w){ maxWk=Math.max(maxWk, w.counts[0]+w.counts[1]); });
@@ -2752,6 +2756,39 @@
       bd.appendChild(col);
     });
     bdCard.appendChild(bd);
+    // Expandable detail: each week's completed tasks, newest first, colour-coded by person.
+    if(breakdownExpanded){
+      var detail = h("div",{style:"margin-top:14px;border-top:1px solid var(--border);padding-top:10px;"});
+      if(totalDoneMonth === 0){
+        detail.appendChild(h("div",{style:"text-align:center;color:var(--muted);font-size:13px;padding:6px 0;", text:"Nothing completed this month yet."}));
+      } else {
+        // Walk weeks newest-first so the most recent work is on top.
+        perWeek.slice().reverse().forEach(function(w){
+          var items = (perWeekItems[ymd(w.wkStart)] || []).slice().sort(function(a,b){ return b.date - a.date; });
+          if(items.length === 0) return;
+          var wkEnd = addDays(w.wkStart, 6);
+          var wkLbl = MONTHS[w.wkStart.getMonth()].slice(0,3)+" "+w.wkStart.getDate()+" – "+MONTHS[wkEnd.getMonth()].slice(0,3)+" "+wkEnd.getDate();
+          detail.appendChild(h("div",{style:"display:flex;align-items:center;font-size:10.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;"},
+            h("span",{style:"flex:1;min-width:0;", text:wkLbl}),
+            h("span",{style:"margin-left:8px;color:"+PC[0].c+";", text:S.names[0]+" "+w.counts[0]}),
+            h("span",{style:"margin-left:8px;color:"+PC[1].c+";", text:S.names[1]+" "+w.counts[1]})
+          ));
+          items.forEach(function(it){
+            detail.appendChild(h("div",{style:"display:flex;align-items:center;gap:8px;padding:5px 0;"},
+              h("span",{style:"width:8px;height:8px;border-radius:50%;flex:none;background:"+PC[it.who].c}),
+              h("span",{style:"flex:none;font-size:15px;", text:it.chore.icon||"🧽"}),
+              h("span",{style:"flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px;", text:it.chore.name}),
+              h("span",{style:"flex:none;font-size:11px;color:var(--muted);font-weight:600;", text:DOW_SHORT[it.date.getDay()]+" "+it.date.getDate()}),
+              h("span",{style:"flex:none;font-size:11px;font-weight:700;color:"+PC[it.who].c, text:S.names[it.who]})
+            ));
+          });
+        });
+      }
+      bdCard.appendChild(detail);
+    }
+    bdCard.appendChild(h("div",{style:"text-align:center;font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.08em;margin-top:12px;text-transform:uppercase;",
+      text: breakdownExpanded ? "Tap to collapse" : "Tap to see who did what"
+    }));
     wrap.appendChild(bdCard);
 
     // ---------- Rewards (Phase 3) ----------
@@ -2929,6 +2966,9 @@
 
   // UI-only toggle for each person's Badges card: top 5 by default, full grid on tap.
   var badgesExpanded = { 0:false, 1:false };
+  // UI-only toggle for the Stats "Week by week" card: tap to reveal the actual
+  // tasks each person completed that month.
+  var breakdownExpanded = false;
 
 
   // ---------- badge detail modal ----------
