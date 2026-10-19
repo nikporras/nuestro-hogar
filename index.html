@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v145";
+  var APP_VERSION = "v146";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -607,17 +607,20 @@
       return { start: wk, end: addDays(wk, 6) };
     }
     if(sch.kind === "biweekly"){
-      if(!sch.anchor) return null;
-      var p = sch.anchor.split("-");
+      // getSchedule doesn't carry an anchor — the cycle anchor is c.startDate.
+      var anchorStr = sch.anchor || c.startDate;
+      if(!anchorStr) return null;
+      var p = String(anchorStr).split("-");
       var a = new Date(+p[0], (+p[1])-1, +p[2]); a.setHours(0,0,0,0);
       var diff = daysBetween(a, when);
       if(diff < 0) return { start: a, end: addDays(a, 13) };
       var s = addDays(a, Math.floor(diff/14)*14);
       return { start: s, end: addDays(s, 13) };
     }
-    if(sch.kind === "monthly_cycle"){
-      if(!sch.anchor) return null;
-      var p2 = sch.anchor.split("-");
+    if(sch.kind === "monthly" || sch.kind === "monthly_cycle"){
+      var anchorStr2 = sch.anchor || c.startDate;
+      if(!anchorStr2) return null;
+      var p2 = String(anchorStr2).split("-");
       var a2 = new Date(+p2[0], (+p2[1])-1, +p2[2]); a2.setHours(0,0,0,0);
       var diff2 = daysBetween(a2, when);
       if(diff2 < 0) return { start: a2, end: addDays(a2, 27) };
@@ -997,6 +1000,7 @@
         if(!c) return;
         if(c.pinned) return;             // Fixed mode — locked, can't swap
         if(!c.rotate) return;            // Anyone-mode chores don't participate
+        if(item.o.manual) return;        // user set this occurrence by hand — respect it
         if(c.linkedAfter && c.linkedAfter.taskId) return; // child — parent flip handles it
         if(!pick || item.dStr < pick.dStr) pick = item;
       });
@@ -1164,7 +1168,7 @@
       var dash = key.indexOf("_"); if(dash < 0) return;
       if(key.slice(0, dash) !== idStr) return;
       var o = S.occurrences[key];
-      if(!o || o.tombstone || o.done || o.manual) return;
+      if(!o || o.tombstone || o.done || o.manual || o.cover != null) return;
       var dStr = key.slice(dash + 1);
       if(dStr < todayStr) return; // leave past-but-undone alone
       upcoming.push({ key: key, dStr: dStr });
@@ -1323,17 +1327,25 @@
           var remoteAt=row.updated_at?Date.parse(row.updated_at):0;
           var empty=!row.data || (typeof row.data==="object" && !Object.keys(row.data).length);
           if(empty){ pushState(true); return; } // first login: seed the cloud from this device
+          // A local change is waiting to be pushed (debounce in flight). Don't
+          // adopt remote now — it would overwrite that just-made edit before our
+          // push lands (dropped write). Our pending push will carry/merge it.
+          if(pushTimer) return;
           if(remoteAt>lastSyncedAt){ applyDoc(row.data); lastSyncedAt=remoteAt||Date.now(); saveLocal(); render(); }
         }).catch(function(){});
     });
   }
   function pushNow(){
+    pushTimer = null; // the debounce has fired — clear it so pullState resumes
     if(!isAuthed()) return;
+    // Capture the document synchronously NOW, before the async token/fetch — so
+    // if a pull overwrites S mid-flight, we still push the state we meant to.
+    var doc = stateDoc();
     ensureToken().then(function(ok){
       if(ok!==true) return;
       var now=new Date().toISOString();
       var hh=authHeaders(true); hh["Prefer"]="return=minimal";
-      fetch(SB_URL+"/rest/v1/household_state?id=eq.1", { method:"PATCH", headers:hh, body:JSON.stringify({ data:stateDoc(), updated_at:now, updated_by:myEmail() }) })
+      fetch(SB_URL+"/rest/v1/household_state?id=eq.1", { method:"PATCH", headers:hh, body:JSON.stringify({ data:doc, updated_at:now, updated_by:myEmail() }) })
         .then(function(r){ if(r.ok){ lastSyncedAt=Date.parse(now); } }).catch(function(){});
     });
   }
@@ -1405,6 +1417,7 @@
     // it counts normally from here.
     if(!o.done && o.cover != null){
       var completer = (S.deviceUser === 0 || S.deviceUser === 1) ? S.deviceUser : (1 - o.cover);
+      o.wasCover = o.cover; // remember the holidaying owner so undo can restore it
       o.assignee = completer;
       delete o.cover;
     }
@@ -1418,6 +1431,10 @@
         S.balances[o.assignee] = Math.max(0, (S.balances[o.assignee]||0) - pts);
       }
       o.done = false; o.doneAt = null;
+      // If this was a holiday "cover" card the partner had picked up, undoing it
+      // returns it to the holidaying owner as an optional cover card — not a new
+      // obligation stranded on the helper (which would hit the helper's streak).
+      if(o.wasCover != null){ o.assignee = o.wasCover; o.cover = o.wasCover; delete o.wasCover; }
       // Un-archive a one-time chore so the card comes back into the list.
       if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
       if(prevAssignee === 0 || prevAssignee === 1){
@@ -1674,7 +1691,10 @@
     p.perDayEarning[dateStr] = (p.perDayEarning[dateStr]||0) + diff;
     if(p.perDayEarning[dateStr] > p.maxDayEarning) p.maxDayEarning = p.perDayEarning[dateStr];
     var defAssn = c.assignee;
-    if((defAssn===0||defAssn===1) && defAssn !== assignee){
+    // A "help" = doing a task the OTHER person owns (Fixed to them). On an
+    // Alternate chore both own it, so a normal rotation turn is NOT a help —
+    // guard on !c.rotate or every alternation falsely unlocks Helping badges.
+    if((defAssn===0||defAssn===1) && defAssn !== assignee && !c.rotate){
       p.helps++;
       var sp = dateStr.split("-");
       var dateObj = new Date(+sp[0], (+sp[1])-1, +sp[2]);
@@ -1703,7 +1723,7 @@
     if(p.perDayDiff[dateStr]) delete p.perDayDiff[dateStr][diff];
     if(p.perDayEarning[dateStr]) p.perDayEarning[dateStr] -= diff;
     var defAssn = c.assignee;
-    if((defAssn===0||defAssn===1) && defAssn !== assignee){
+    if((defAssn===0||defAssn===1) && defAssn !== assignee && !c.rotate){
       p.helps--;
       if(p.perDayHelps[dateStr]) p.perDayHelps[dateStr]--;
       var sp = dateStr.split("-");
@@ -1962,7 +1982,7 @@
     var floorStr = ymd(addDays(TODAY, -14));
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
-      if(!o || o.tombstone || o.done) return;
+      if(!o || o.tombstone || o.done || o.cover != null) return;
       var dash = key.indexOf("_"); if(dash < 0) return;
       var dStr = key.slice(dash + 1);
       if(dStr >= todayStr || dStr < floorStr) return;
@@ -2018,7 +2038,7 @@
     var excludeStr = excludeChoreId != null ? String(excludeChoreId) : null;
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
-      if(!o || o.tombstone || o.done) return;
+      if(!o || o.tombstone || o.done || o.cover != null) return;
       if(o.assignee !== 0 && o.assignee !== 1) return;
       var dash = key.indexOf("_"); if(dash < 0) return;
       if(excludeStr && key.slice(0, dash) === excludeStr) return;
@@ -2043,7 +2063,7 @@
     S.chores.forEach(function(c){ byId[String(c.id)] = c; });
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
-      if(!o || o.tombstone || o.done) return;
+      if(!o || o.tombstone || o.done || o.cover != null) return;
       if(o.assignee !== 0 && o.assignee !== 1) return;
       var dash = key.indexOf("_"); if(dash < 0) return;
       var dStr = key.slice(dash + 1);
@@ -2241,7 +2261,8 @@
     var prev = o.assignee;
     if(prev === to) return;
     o.assignee = to;
-    delete o.balanced; // user override → no longer a rebalance swap
+    delete o.balanced;   // user override → no longer a rebalance swap
+    o.manual = true;     // ...and the rebalancer must not flip it back
     // Mirror the rebalance the old tap-cycle did: done occurrences need to
     // swing their points to the new owner without going negative.
     if(o.done){
@@ -2272,7 +2293,9 @@
     // card on the original day.
     var srcAssignee = occAssignee(ch, fromDate);
     S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true };
-    S.occurrences[toKey] = { assignee: srcAssignee, done: false, doneAt: null, pinned: true };
+    // manual:true so a moved linked-after child isn't swept by syncAfterChores'
+    // orphan-drop (it has no parent at toDate-N) the instant save() runs.
+    S.occurrences[toKey] = { assignee: srcAssignee, done: false, doneAt: null, pinned: true, manual: true };
     occSheetCtx.date = new Date(toDate);
     save(); render();
   }
@@ -2308,7 +2331,7 @@
       var dStr = key.slice(dash + 1);
       if(dStr <= fromStr) return;
       var o = S.occurrences[key];
-      if(!o || o.tombstone || o.done) return;
+      if(!o || o.tombstone || o.done || o.cover != null) return;
       var d = parseYmd(dStr); if(!d) return;
       // Weekly: only the moved weekday's lane shifts — a Mon+Thu task moved
       // on a Monday leaves the Thursday cards alone.
@@ -2437,8 +2460,10 @@
       style:"width:100%;padding:11px;border:1.5px solid var(--danger);background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;font-size:13px;border-radius:11px;cursor:pointer;margin-top:14px;",
       onClick:function(){
         if(!confirm("Skip '"+ch.name+"' for this day? It'll still appear on its other scheduled days.")) return;
-        skipOccurrence(ch, date);
+        // Close the sheet BEFORE skipOccurrence — it calls render() itself, so
+        // nulling the modal afterwards would never repaint (sheet stuck open).
         occSheetCtx = null; S.modal = null;
+        skipOccurrence(ch, date);
       },
       text: "× Skip this day"
     });
@@ -2951,12 +2976,13 @@
       var logCard = h("div",{class:"vs-card"});
       var log = S.redemptions.slice().sort(function(a,b){ return (b.id||0)-(a.id||0); }).slice(0,5);
       log.forEach(function(red, i){
+        var rby = (red.by===0||red.by===1) ? red.by : 0; // guard malformed/synced data
         logCard.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;padding:9px 0;"+(i<log.length-1?"border-bottom:1px solid var(--border);":"")},
           h("div",{style:"flex:1;min-width:0;"},
             h("div",{style:"font-weight:600;font-size:14px;", text:red.rewardName}),
-            h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:2px;", text:S.names[red.by]+" · "+formatWhen(red.redeemedAt)})
+            h("div",{style:"font-size:11.5px;color:var(--muted);margin-top:2px;", text:(S.names[rby]||"?")+" · "+formatWhen(red.redeemedAt)})
           ),
-          h("div",{style:"font-weight:700;font-size:13px;color:"+PC[red.by].c+";display:flex;align-items:center;gap:3px;"},
+          h("div",{style:"font-weight:700;font-size:13px;color:"+PC[rby].c+";display:flex;align-items:center;gap:3px;"},
             h("span",{text:"-"+red.rewardCost}),
             h("img",{src:"./icons/purr.png", alt:"Purrs", style:"width:14px;height:14px;"})
           )
@@ -3184,6 +3210,11 @@
   // Lives outside S because it's transient device-local UI state.
   var catPopupQueue = [];
   function queueCatPopup(catName, body){
+    // Boot-time migrations call save()→evaluateBadges() before this module's
+    // `var catPopupQueue`/`CAT_PHRASES` are assigned (they're declared later).
+    // Bail out quietly in that window instead of throwing on undefined — a
+    // badge re-unlocked during a migration doesn't need a popup anyway.
+    if(!catPopupQueue) return;
     var cn = String(catName||"atena").toLowerCase();
     catPopupQueue.push({ cat:cn, title:pickCatPhrase(cn), body:body });
     if(!S.modal){ S.modal = "catPopup"; }
@@ -4041,8 +4072,9 @@
   // any cloud. Keep the file on your phone / Synology.
   function exportBackup(){
     try{
-      var data={ app:"our-home", version:1, exportedAt:new Date().toISOString(),
-                 names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders };
+      // Full snapshot (everything in the synced doc) so "restore" really does
+      // restore all progress — not just names/chores/doneLog/reminders.
+      var data={ app:"our-home", version:2, exportedAt:new Date().toISOString(), state: stateDoc() };
       var blob=new Blob([JSON.stringify(data,null,2)], {type:"application/json;charset=utf-8"});
       var url=URL.createObjectURL(blob);
       var a=document.createElement("a");
@@ -4056,13 +4088,21 @@
     reader.onload=function(){
       var data;
       try{ data=JSON.parse(reader.result); }catch(e){ alert("That file isn't a valid backup."); return; }
-      if(!data || !Array.isArray(data.chores)){ alert("That file doesn't look like an Olympaws backup."); return; }
-      if(!confirm("Replace ALL current data with this backup? Your current chores, history and reminders will be overwritten. This can't be undone.")) return;
-      S.chores   = data.chores;
-      S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
-      S.doneLog  = (data.doneLog && typeof data.doneLog==="object") ? data.doneLog : {};
-      S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
-      save(); S.modal=null; render();
+      var full = (data && data.state && typeof data.state==="object" && Array.isArray(data.state.chores)) ? data.state : null;
+      if(!full && (!data || !Array.isArray(data.chores))){ alert("That file doesn't look like an Olympaws backup."); return; }
+      if(!confirm("Replace ALL current data with this backup? Everything — chores, history, Purrs, badges and reminders — is overwritten. This can't be undone.")) return;
+      if(full){
+        // v2 backup: restore the whole state (adopts occurrences, balances,
+        // badges, streaks, reminders, holiday, etc.) via the same path as sync.
+        applyDoc(full);
+      } else {
+        // v1 legacy backup: only the four old fields were saved.
+        S.chores   = data.chores;
+        S.names    = (Array.isArray(data.names) && data.names.length===2) ? data.names : S.names;
+        S.doneLog  = (data.doneLog && typeof data.doneLog==="object") ? data.doneLog : {};
+        S.reminders= Array.isArray(data.reminders) ? data.reminders : [];
+      }
+      save(); pushState(true); S.modal=null; render();
       alert("Backup restored.");
     };
     reader.onerror=function(){ alert("Couldn't read that file."); };
@@ -4130,8 +4170,11 @@
   function restoreFromSnapshot(snap){
     if(!snap || !snap.data) return false;
     applyDoc(snap.data);
-    lastSyncedAt = 0; // force the next sync to re-push from us
+    // Do NOT reset lastSyncedAt to 0 — that makes the very next pull see the
+    // (pre-restore) cloud doc as "newer" and clobber the restore. Leave it as
+    // the current cloud time and push the restored state immediately so it wins.
     save();
+    pushState(true);
     render();
     return true;
   }
@@ -4356,7 +4399,9 @@
 
   // ---------- header / nav / render ----------
   function header(){
-    var todays=choresForDay(TODAY);
+    // Exclude holiday "cover" cards from Today's progress bar — they're optional,
+    // not an obligation, so they shouldn't inflate the "N of M" denominator.
+    var todays=choresForDay(TODAY).filter(function(c){ return occCover(c, TODAY) == null; });
     var done=todays.filter(function(c){return isDone(c,TODAY);}).length;
     // Rolled-over cards also count toward 'Today's progress' — they're the
     // same workload from the user's seat, just dated earlier. Skipping the
@@ -4471,6 +4516,10 @@
     root.appendChild(body);
     if(S.tab==="today"||S.tab==="tasks"){ root.appendChild(h("button",{class:"fab", text:"+", onClick:function(){ S.modal="addChoose"; render(); }})); }
     root.appendChild(nav());
+    // Surface any queued cat popup (badge unlock / Purr milestone) once no other
+    // modal is blocking — e.g. a popup queued while the occurrence sheet was open
+    // would otherwise be swallowed until the next unrelated queue event.
+    if(catPopupQueue && catPopupQueue.length > 0 && !S.modal){ S.modal = "catPopup"; }
     if(S.modal==="add") root.appendChild(modalAdd());
     if(S.modal==="addChoose") root.appendChild(modalAddChoose());
     if(S.modal==="addInstance") root.appendChild(modalAddInstance());
