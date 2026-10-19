@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v143";
+  var APP_VERSION = "v144";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3792,13 +3792,21 @@
 
     // Notifications — available on every device (each phone grants its own).
     var ns=notifStatus();
-    var notifBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--border);border-radius:11px;background:var(--input-bg);color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:enableNotifications,
-      text: ns==="granted" ? "✅ Notifications are on" : (ns==="denied" ? "🔕 Blocked — fix in browser settings" : (ns==="unsupported" ? "Not supported on this device" : "🔔 Enable notifications")) });
+    // "On" requires BOTH OS permission AND a live stored subscription (pushArmed).
+    // Permission-granted-but-not-armed means delivery is silently dead (common
+    // after a force-update cleared the SW) — surface that instead of lying "on".
+    var notifLabel;
+    if(ns==="granted") notifLabel = pushArmed ? "✅ Notifications are on" : "⚠️ Re-arming… tap to turn on";
+    else if(ns==="denied") notifLabel = "🔕 Blocked — fix in browser settings";
+    else if(ns==="unsupported") notifLabel = "Not supported on this device";
+    else notifLabel = "🔔 Enable notifications";
+    var notifBtn=h("button",{ style:"width:100%;padding:11px;border:1.5px solid var(--border);border-radius:11px;background:var(--input-bg);color:var(--text);font:inherit;font-weight:700;cursor:pointer;", onClick:function(){ if(ns==="granted") subscribeToPush(); else enableNotifications(); },
+      text: notifLabel });
     var notifChildren = [
       h("div",{style:"border-top:1px solid #eee;margin:18px 0 12px;"}),
       h("label",{style:"display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px;", text:"Notifications"}),
       notifBtn,
-      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Each phone enables its own."})
+      h("div",{style:"font-size:11px;color:var(--muted);margin-top:8px;text-align:center;", text:"For reminder alerts at a set time. Each phone enables its own. If it stops, reopen the app — it re-arms automatically."})
     ];
     // Test push — visible only when permission is granted. Uses the SW's
     // showNotification() directly so it doesn't depend on the backend
@@ -4141,20 +4149,38 @@
     });
   }
 
+  // Device-local flag: is this phone actually armed (a live push subscription
+  // stored in Supabase), as opposed to merely having OS permission? The Settings
+  // status reads this so it can't claim "on" while delivery is silently dead.
+  var pushArmed = (function(){ try{ return localStorage.getItem("nh_pushArmed")==="1"; }catch(e){ return false; } })();
+  function setPushArmed(v){ pushArmed = !!v; try{ localStorage.setItem("nh_pushArmed", v?"1":"0"); }catch(e){} }
   function subscribeToPush(){
     if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
     if(!VAPID_PUBLIC_KEY || !isAuthed()) return;
     navigator.serviceWorker.ready.then(function(reg){
-      return reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
+      // Reuse an existing subscription if the SW still has one; only create a
+      // new one when there isn't (e.g. after a force-update unregistered the SW).
+      return reg.pushManager.getSubscription().then(function(existing){
+        if(existing) return existing;
+        return reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
+      });
     }).then(function(sub){
       var j=sub.toJSON();
+      // If the endpoint changed since last time (a fresh subscription after the
+      // SW was cleared), delete the stale row so the scheduler stops delivering
+      // to a dead endpoint — a cause of pushes seeming to "rarely fire".
+      var prev=null; try{ prev=JSON.parse(localStorage.getItem("nh_pushSub")||"null"); }catch(e){}
+      if(prev && prev.endpoint && prev.endpoint !== j.endpoint){
+        try{ fetch(SB_URL+"/rest/v1/push_subscriptions?endpoint=eq."+encodeURIComponent(prev.endpoint), { method:"DELETE", headers:authHeaders(true) }).catch(function(){}); }catch(e){}
+      }
       try{ localStorage.setItem("nh_pushSub", JSON.stringify(j)); }catch(e){}
       // Store this phone's subscription so the scheduler can deliver reminder pushes.
       var tz=null; try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||null; }catch(e){}
       var hh=authHeaders(true); hh["Prefer"]="resolution=merge-duplicates";
       return fetch(SB_URL+"/rest/v1/push_subscriptions?on_conflict=endpoint", { method:"POST", headers:hh,
-        body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth, tz:tz }) });
-    }).catch(function(e){ console.warn("Push subscribe failed:", e); });
+        body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth, tz:tz }) })
+        .then(function(r){ var ok = !!(r && r.ok); if(ok !== pushArmed){ setPushArmed(ok); render(); } else { setPushArmed(ok); } });
+    }).catch(function(e){ console.warn("Push subscribe failed:", e); if(pushArmed){ setPushArmed(false); render(); } });
   }
 
   // ---------- all tasks tab ----------
