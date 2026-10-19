@@ -109,16 +109,7 @@
   .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;color:#fff;}
   .tag.person{cursor:pointer;}
 
-  /* Week strip */
-    flex:1;min-width:44px;background:var(--surface);border-radius:14px;padding:9px 4px;text-align:center;
-    cursor:pointer;box-shadow:var(--shadow);border:2px solid transparent;
-  }
-  .day-pill.active{border-color:var(--accent1);}
-  .day-pill.future{opacity:.45;}
-  .day-pill .dow{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;}
-  .day-pill .num{font-size:17px;font-weight:700;margin-top:2px;}
-  .day-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--accent1);margin:4px auto 0;}
-  .day-pill .dot.empty{background:transparent;}
+  /* (removed dead/malformed .day-pill week-strip rules) */
   .today-ring{outline:2px solid var(--accent2);outline-offset:1px;}
 
   /* Month grid */
@@ -230,7 +221,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v148";
+  var APP_VERSION = "v149";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1634,7 +1625,11 @@
     }
     if(S.doneLog){
       Object.keys(S.doneLog).forEach(function(k){
-        if(S.occurrences && S.occurrences[k] && S.occurrences[k].done) return; // already counted
+        // If an occurrence record exists it is the source of truth (counted
+        // above only when actually done); the doneLog fallback is just for
+        // legacy keys with no occurrence — so an UNDONE occurrence isn't
+        // double-counted here.
+        if(S.occurrences && S.occurrences[k]) return;
         addFromKey(k);
       });
     }
@@ -1743,8 +1738,10 @@
     var diff = effortOf(c);
     if(diff===1||diff===2||diff===3) p.byDiff[diff]++;
     if(!p.perDayDiff[dateStr]) p.perDayDiff[dateStr] = {};
-    p.perDayDiff[dateStr][diff] = true;
-    if(p.perDayDiff[dateStr][1] && p.perDayDiff[dateStr][2] && p.perDayDiff[dateStr][3]) p.tripleThreat = true;
+    // Count (not a boolean flag) so undoing one of two same-difficulty tasks
+    // doesn't wrongly clear the day's "did a diff-N" state for Triple Threat.
+    p.perDayDiff[dateStr][diff] = (p.perDayDiff[dateStr][diff]||0) + 1;
+    if(p.perDayDiff[dateStr][1]>0 && p.perDayDiff[dateStr][2]>0 && p.perDayDiff[dateStr][3]>0) p.tripleThreat = true;
     p.perDayEarning[dateStr] = (p.perDayEarning[dateStr]||0) + diff;
     if(p.perDayEarning[dateStr] > p.maxDayEarning) p.maxDayEarning = p.perDayEarning[dateStr];
     var defAssn = c.assignee;
@@ -1777,7 +1774,7 @@
     p.totalDone--;
     var diff = effortOf(c);
     if(diff===1||diff===2||diff===3) p.byDiff[diff]--;
-    if(p.perDayDiff[dateStr]) delete p.perDayDiff[dateStr][diff];
+    if(p.perDayDiff[dateStr] && p.perDayDiff[dateStr][diff]) p.perDayDiff[dateStr][diff]--;
     if(p.perDayEarning[dateStr]) p.perDayEarning[dateStr] -= diff;
     var defAssn = c.assignee;
     if((defAssn===0||defAssn===1) && defAssn !== assignee && !c.rotate){
