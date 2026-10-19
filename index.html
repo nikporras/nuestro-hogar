@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v147";
+  var APP_VERSION = "v148";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1254,16 +1254,69 @@
   }
 
   function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:bothOnHoliday(), holiday:(Array.isArray(S.holiday)?S.holiday:[false,false]), lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit, biweeklyModeMigrated:!!S.biweeklyModeMigrated }; }
-  function applyDoc(d){
+  // ---------- merge-on-receive helpers ----------
+  // The sync doc is last-writer-wins as a whole, which drops a record one phone
+  // changed if the other's doc didn't have it. For the collections where a
+  // union is safe we MERGE instead of replace on a sync pull, so two phones
+  // editing different tasks/days no longer clobber each other.
+  //  - occurrences: union of keys; a conflict on the same key is won by the
+  //    higher `lm` (last-modified stamp set on every user edit), then by
+  //    completion, then by the incoming copy.
+  //  - doneLog: union, incoming wins conflicts.
+  //  - redemptions: append-only union by id (never lose a redemption).
+  //  - badges: union per person, earliest unlock timestamp (monotone).
+  //  - maxStreaks: max per person (monotone personal best).
+  // chores/rewards/reminders/balances/names stay last-writer-wins so a real
+  // DELETION still propagates (union would resurrect deleted items).
+  function mergeOccMap(local, remote){
+    var out = {}, keys = {};
+    Object.keys(local||{}).forEach(function(k){ keys[k]=1; });
+    Object.keys(remote||{}).forEach(function(k){ keys[k]=1; });
+    Object.keys(keys).forEach(function(k){
+      var lo = local && local[k], ro = remote && remote[k];
+      if(lo && ro){
+        var la = (typeof lo.lm==="number")?lo.lm:-1, lb=(typeof ro.lm==="number")?ro.lm:-1;
+        out[k] = (la!==lb) ? (la>lb?lo:ro) : ((!!lo.done!==!!ro.done) ? (lo.done?lo:ro) : ro);
+      } else out[k] = lo || ro;
+    });
+    return out;
+  }
+  function mergeKeyMap(local, remote){
+    var out = {}, l = local||{}, r = remote||{};
+    Object.keys(l).forEach(function(k){ out[k]=l[k]; });
+    Object.keys(r).forEach(function(k){ out[k]=r[k]; });
+    return out;
+  }
+  function mergeById(local, remote){
+    var remoteIds = {}, out = [];
+    (remote||[]).forEach(function(x){ if(x&&x.id!=null) remoteIds[x.id]=1; out.push(x); });
+    (local||[]).forEach(function(x){ if(x && x.id!=null && !remoteIds[x.id]) out.push(x); });
+    return out;
+  }
+  function mergeBadgeSets(local, remote){
+    var out = {"0":{},"1":{}};
+    ["0","1"].forEach(function(p){
+      var lp=(local&&local[p])||{}, rp=(remote&&remote[p])||{}, ids={};
+      Object.keys(lp).forEach(function(i){ids[i]=1;}); Object.keys(rp).forEach(function(i){ids[i]=1;});
+      Object.keys(ids).forEach(function(i){
+        var lt=lp[i], rt=rp[i];
+        out[p][i] = (lt&&rt) ? ((String(lt)<String(rt))?lt:rt) : (lt||rt);
+      });
+    });
+    return out;
+  }
+  // replace=true → wholesale adopt (snapshot/backup restore). Otherwise MERGE
+  // the union-safe collections so a concurrent pull can't drop a local edit.
+  function applyDoc(d, replace){
     if(!d||typeof d!=="object") return;
     if(Array.isArray(d.chores)) S.chores=d.chores;
     if(Array.isArray(d.names)&&d.names.length===2) S.names=d.names;
-    if(d.doneLog&&typeof d.doneLog==="object") S.doneLog=d.doneLog;
+    if(d.doneLog&&typeof d.doneLog==="object") S.doneLog = replace ? d.doneLog : mergeKeyMap(S.doneLog, d.doneLog);
     if(Array.isArray(d.reminders)) S.reminders=d.reminders;
-    if(d.occurrences&&typeof d.occurrences==="object") S.occurrences=d.occurrences;
+    if(d.occurrences&&typeof d.occurrences==="object") S.occurrences = replace ? d.occurrences : mergeOccMap(S.occurrences, d.occurrences);
     if(Array.isArray(d.balances)&&d.balances.length===2) S.balances=d.balances;
     if(Array.isArray(d.rewards)) S.rewards=d.rewards;
-    if(Array.isArray(d.redemptions)) S.redemptions=d.redemptions;
+    if(Array.isArray(d.redemptions)) S.redemptions = replace ? d.redemptions : mergeById(S.redemptions, d.redemptions);
     // Track whether the incoming badges blob carried leftover non per-person
     // keys — that means the remote was last written by a pre-v127 client and
     // we should push the cleaned-up shape back so the next pull doesn't loop.
@@ -1273,10 +1326,10 @@
       for(var i = 0; i < bKeys.length; i++){
         if(bKeys[i] !== "0" && bKeys[i] !== "1"){ badgesDirty = true; break; }
       }
-      S.badges = d.badges;
+      S.badges = replace ? d.badges : mergeBadgeSets(S.badges, d.badges);
     }
     migrateBadgesToPerPerson();
-    if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks=d.maxStreaks;
+    if(Array.isArray(d.maxStreaks)&&d.maxStreaks.length===2) S.maxStreaks = replace ? d.maxStreaks : [Math.max(S.maxStreaks&&S.maxStreaks[0]||0, d.maxStreaks[0]||0), Math.max(S.maxStreaks&&S.maxStreaks[1]||0, d.maxStreaks[1]||0)];
     if(typeof d.badgeBaselineDate==="string" || d.badgeBaselineDate===null) S.badgeBaselineDate=d.badgeBaselineDate;
     if(typeof d.badgeBaselineAt==="string" || d.badgeBaselineAt===null) S.badgeBaselineAt=d.badgeBaselineAt;
     if(typeof d.scheduleClearedAt==="string" || d.scheduleClearedAt===null) S.scheduleClearedAt=d.scheduleClearedAt;
@@ -1399,6 +1452,9 @@
     var o = occ(ch, date);
     return (o && o.cover != null) ? o.cover : null;
   }
+  // Stamp an occurrence with the current time so merge-on-receive can tell
+  // which of two concurrent edits to the same (chore,date) is the newer one.
+  function occStamp(o){ if(o && typeof o === "object") o.lm = Date.now(); return o; }
   // Writes always go to the occurrence record; doneLog is kept in sync so older
   // code paths (stats, snapshots) keep working until they're migrated too.
   function ensureOcc(ch, date){
@@ -1456,6 +1512,7 @@
       }
       scheduleNextAfterCompletion(ch, date);
     }
+    occStamp(o); // mark this edit as newer than any concurrent partner edit
     save();
     render();
   }
@@ -2241,7 +2298,7 @@
       alert("This task is already done. Uncheck it first if you want to skip it.");
       return;
     }
-    S.occurrences[key] = { tombstone: true };
+    S.occurrences[key] = { tombstone: true, lm: Date.now() };
     save(); render();
   }
 
@@ -2263,6 +2320,7 @@
     o.assignee = to;
     delete o.balanced;   // user override → no longer a rebalance swap
     o.manual = true;     // ...and the rebalancer must not flip it back
+    occStamp(o);
     // Mirror the rebalance the old tap-cycle did: done occurrences need to
     // swing their points to the new owner without going negative.
     if(o.done){
@@ -2292,10 +2350,10 @@
     // date. Tombstone the source so isDue/ensureOccurrences don't re-place a
     // card on the original day.
     var srcAssignee = occAssignee(ch, fromDate);
-    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true };
+    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true, lm: Date.now() };
     // manual:true so a moved linked-after child isn't swept by syncAfterChores'
     // orphan-drop (it has no parent at toDate-N) the instant save() runs.
-    S.occurrences[toKey] = { assignee: srcAssignee, done: false, doneAt: null, pinned: true, manual: true };
+    S.occurrences[toKey] = { assignee: srcAssignee, done: false, doneAt: null, pinned: true, manual: true, lm: Date.now() };
     occSheetCtx.date = new Date(toDate);
     save(); render();
   }
@@ -2342,15 +2400,15 @@
       var k = occKey(ch.id, d);
       var ex = S.occurrences[k];
       if(ex && !ex.tombstone) return; // lands on an existing card — merge
-      S.occurrences[k] = { assignee: assignee, done: false, doneAt: null, pinned: true };
+      S.occurrences[k] = { assignee: assignee, done: false, doneAt: null, pinned: true, lm: Date.now() };
     }
     // The tapped card.
     var srcAssignee = occAssignee(ch, fromDate);
-    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true };
+    S.occurrences[occKey(ch.id, fromDate)] = { tombstone: true, lm: Date.now() };
     place(toDate, srcAssignee);
     // The future lane, each keeping its own person.
     future.forEach(function(f){
-      S.occurrences[f.key] = { tombstone: true };
+      S.occurrences[f.key] = { tombstone: true, lm: Date.now() };
       place(addDays(f.d, deltaDays), f.assignee);
     });
     // Permanent series rewrite.
@@ -3336,7 +3394,7 @@
     // Overwrites only tombstones / nothing. manual:true keeps syncAfterChores
     // from sweeping it when the task is a linked-after child; pinned:true
     // keeps the series generator's hands off it.
-    S.occurrences[key] = { assignee: ctx.assignee, done: false, doneAt: null, pinned: true, manual: true };
+    S.occurrences[key] = { assignee: ctx.assignee, done: false, doneAt: null, pinned: true, manual: true, lm: Date.now() };
     // A done-and-archived one-time comes back into view for its new day.
     if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
     addInstCtx = null; S.modal = null;
@@ -3485,7 +3543,7 @@
       if(!existing || !existing.done){
         S.occurrences[k] = {
           assignee: (target.assignee === 0 || target.assignee === 1) ? target.assignee : null,
-          done: false, doneAt: null, pinned: true
+          done: false, doneAt: null, pinned: true, lm: Date.now()
         };
       }
       // New / re-saved one-times come out of the archive even if they were
@@ -4103,7 +4161,7 @@
       if(full){
         // v2 backup: restore the whole state (adopts occurrences, balances,
         // badges, streaks, reminders, holiday, etc.) via the same path as sync.
-        applyDoc(full);
+        applyDoc(full, true); // replace, don't merge
       } else {
         // v1 legacy backup: only the four old fields were saved.
         S.chores   = data.chores;
@@ -4178,7 +4236,7 @@
   // untouched (they're device-local, never in stateDoc).
   function restoreFromSnapshot(snap){
     if(!snap || !snap.data) return false;
-    applyDoc(snap.data);
+    applyDoc(snap.data, true); // replace, don't merge — a restore should overwrite
     // Do NOT reset lastSyncedAt to 0 — that makes the very next pull see the
     // (pre-restore) cloud doc as "newer" and clobber the restore. Leave it as
     // the current cloud time and push the restored state immediately so it wins.
