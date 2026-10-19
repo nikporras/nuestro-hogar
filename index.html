@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v146";
+  var APP_VERSION = "v147";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -3935,6 +3935,15 @@
         onClick: sendTestNotification,
         text:"🧪 Send test notification"
       }));
+      // Daily digest time — per phone. Written to this phone's subscription so
+      // the Edge Function knows when to send.
+      var digestSeg = h("div",{class:"seg", style:"margin-top:10px;"});
+      [["off","Off"],["9am","9 AM"],["6pm","6 PM"],["both","Both"]].forEach(function(pair){
+        digestSeg.appendChild(h("button",{ class:(digestPref===pair[0]?"on":""), onClick:function(){ setDigestPref(pair[0]); }, text:pair[1] }));
+      });
+      notifChildren.push(h("div",{style:"font-size:11.5px;font-weight:700;color:var(--muted);margin:14px 0 6px;", text:"Daily task summary"}));
+      notifChildren.push(digestSeg);
+      notifChildren.push(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;line-height:1.4;", text:"A push listing your tasks — 9 AM (on today), 6 PM (what's left), or both. This phone only."}));
     }
     children.push.apply(children, notifChildren);
 
@@ -4283,6 +4292,20 @@
   // status reads this so it can't claim "on" while delivery is silently dead.
   var pushArmed = (function(){ try{ return localStorage.getItem("nh_pushArmed")==="1"; }catch(e){ return false; } })();
   function setPushArmed(v){ pushArmed = !!v; try{ localStorage.setItem("nh_pushArmed", v?"1":"0"); }catch(e){} }
+  // Per-phone daily-digest time: "off" | "9am" | "6pm" | "both". The Edge
+  // Function reads this off the subscription row to decide when to send.
+  var digestPref = (function(){ try{ return localStorage.getItem("nh_digest") || "9am"; }catch(e){ return "9am"; } })();
+  function pushDigestPref(){
+    // Best-effort PATCH as its own call so a not-yet-added `digest` column can't
+    // fail the main subscription upsert — it just no-ops until the column exists.
+    try{
+      var sub=JSON.parse(localStorage.getItem("nh_pushSub")||"null");
+      if(!sub || !sub.endpoint || !isAuthed()) return;
+      var hh=authHeaders(true); hh["Prefer"]="return=minimal";
+      fetch(SB_URL+"/rest/v1/push_subscriptions?endpoint=eq."+encodeURIComponent(sub.endpoint), { method:"PATCH", headers:hh, body:JSON.stringify({ digest: digestPref }) }).catch(function(){});
+    }catch(e){}
+  }
+  function setDigestPref(pref){ digestPref = pref; try{ localStorage.setItem("nh_digest", pref); }catch(e){} pushDigestPref(); render(); }
   function subscribeToPush(){
     if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
     if(!VAPID_PUBLIC_KEY || !isAuthed()) return;
@@ -4308,7 +4331,7 @@
       var hh=authHeaders(true); hh["Prefer"]="resolution=merge-duplicates";
       return fetch(SB_URL+"/rest/v1/push_subscriptions?on_conflict=endpoint", { method:"POST", headers:hh,
         body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth, tz:tz }) })
-        .then(function(r){ var ok = !!(r && r.ok); if(ok !== pushArmed){ setPushArmed(ok); render(); } else { setPushArmed(ok); } });
+        .then(function(r){ var ok = !!(r && r.ok); if(ok !== pushArmed){ setPushArmed(ok); render(); } else { setPushArmed(ok); } if(ok) pushDigestPref(); });
     }).catch(function(e){ console.warn("Push subscribe failed:", e); if(pushArmed){ setPushArmed(false); render(); } });
   }
 
