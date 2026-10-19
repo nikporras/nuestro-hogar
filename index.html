@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v139";
+  var APP_VERSION = "v140";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -4052,10 +4052,14 @@
       return;
     }
     navigator.serviceWorker.ready.then(function(reg){
+      // Absolute URLs so the OS reliably fetches them; badge is the monochrome
+      // status-bar mark (a full-colour icon there shows as a blank white square).
+      var iconURL  = new URL("icons/icon-192.png", location.href).href;
+      var badgeURL = new URL("icons/badge-mono.png", location.href).href;
       return reg.showNotification("Olympaws · test", {
         body: "If you can see this, notifications work on this phone.",
-        icon: "./icons/icon-192.png",
-        badge: "./icons/icon-192.png",
+        icon: iconURL,
+        badge: badgeURL,
         tag: "olympaws-test"
       });
     }).catch(function(err){

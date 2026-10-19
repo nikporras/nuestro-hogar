@@ -10,7 +10,7 @@
  *  - Non-GET requests are never touched.
  */
 
-const CACHE = "nuestro-hogar-v139";
+const CACHE = "nuestro-hogar-v140";
 
 // The app shell. Keep this list explicit — only known static assets.
 const SHELL = [
@@ -19,6 +19,7 @@ const SHELL = [
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "./icons/badge-mono.png",
   "./icons/cats/atena.png",
   "./icons/cats/thor.png",
   "./icons/cats/rum.png",
@@ -79,10 +80,15 @@ self.addEventListener("push", (event) => {
   try { data = event.data ? event.data.json() : {}; }
   catch (e) { data = { title: "Olympaws", body: event.data ? event.data.text() : "" }; }
   const title = data.title || "Olympaws";
+  // Absolute URLs resolved from the SW scope so the OS can always fetch them.
+  // icon = the big full-colour image in the expanded notification;
+  // badge = the small status-bar mark, which MUST be a transparent monochrome
+  // silhouette (badge-mono.png) — a full-colour icon there renders as a blank
+  // white square on Android ("no photo of the app").
   const options = {
     body: data.body || "",
-    icon: "./icons/icon-192.png",
-    badge: "./icons/icon-192.png",
+    icon: new URL("icons/icon-192.png", self.registration.scope).href,
+    badge: new URL("icons/badge-mono.png", self.registration.scope).href,
     tag: data.tag,
     data: { url: data.url || "./" }
   };
