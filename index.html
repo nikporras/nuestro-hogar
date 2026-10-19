@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v142";
+  var APP_VERSION = "v143";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2764,17 +2764,21 @@
     var bdCard=h("div",{class:"vs-card"});
     var N_MONTHS = 12;
     var monthsData = []; var maxMo = 1;
-    for(var mi=0; mi<N_MONTHS; mi++){ var md=monthDone(-mi); monthsData.push(md); maxMo=Math.max(maxMo, md.counts[0]+md.counts[1]); }
-    var scroll = h("div",{style:"overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px;"});
+    for(var mi=0; mi<N_MONTHS; mi++){ var md=monthDone(-mi); monthsData.push({ off:-mi, md:md }); maxMo=Math.max(maxMo, md.counts[0]+md.counts[1]); }
+    // Oldest on the LEFT, newest on the RIGHT (conventional timeline). The
+    // selected month is scrolled into view after render (see render()).
+    monthsData.reverse();
+    var scroll = h("div",{id:"mo-scroll", style:"overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px;position:relative;"});
     var moRow = h("div",{style:"display:flex;gap:7px;min-width:max-content;"});
-    monthsData.forEach(function(md, k){
-      var off = -k;
+    monthsData.forEach(function(item){
+      var off = item.off, md = item.md;
       var ms2 = new Date(TODAY.getFullYear(), TODAY.getMonth()+off, 1);
       var lbl = MONTHS[ms2.getMonth()].slice(0,3) + (ms2.getMonth()===0 ? " '"+String(ms2.getFullYear()).slice(2) : "");
       var sel = (off === moOff);
-      var col = h("div",{style:"flex:0 0 38px;text-align:center;cursor:pointer;",
-        onClick:function(){ S.statsMonthOffset = off; breakdownExpanded = true; render(); }},
+      var col = h("div",{style:"flex:0 0 38px;text-align:center;cursor:pointer;"},
         h("div",{style:"font-size:10px;font-weight:"+(sel?"800":"700")+";margin-bottom:5px;color:"+(sel?"var(--accent2)":"var(--muted)")+";", text:lbl}));
+      if(sel) col.setAttribute("id", "mo-selected");
+      col.addEventListener("click", function(){ S.statsMonthOffset = off; breakdownExpanded = true; render(); });
       var bar=h("div",{class:"bd-bar", style:sel?"outline:2px solid var(--accent2);outline-offset:1px;":""});
       [0,1].forEach(function(p){ if(md.counts[p]>0){ bar.appendChild(h("div",{class:"bd-seg", style:"height:"+(md.counts[p]/maxMo*100)+"%;background:"+PC[p].c})); } });
       col.appendChild(bar);
@@ -2782,7 +2786,7 @@
     });
     scroll.appendChild(moRow);
     bdCard.appendChild(scroll);
-    bdCard.appendChild(h("div",{style:"font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px;", text:"◂ scroll for older months · tap one to open it"}));
+    bdCard.appendChild(h("div",{style:"font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px;", text:"◂ scroll left for older months · tap one to open it"}));
     // Detail for the selected month: completed tasks grouped by week, newest
     // first, colour-coded by person, with points on every row and per-week totals.
     if(breakdownExpanded){
@@ -4374,6 +4378,15 @@
       if(newScrolls[i]) newScrolls[i].scrollTop = top;
     });
     if(savedPageY) window.scrollTo(0, savedPageY);
+    // Horizontally centre the selected month in the Month-by-month strip so the
+    // current month is in view by default (bars run oldest-left → newest-right).
+    try{
+      var moScroll = document.getElementById("mo-scroll");
+      var moSel = document.getElementById("mo-selected");
+      if(moScroll && moSel){
+        moScroll.scrollLeft = moSel.offsetLeft - (moScroll.clientWidth/2) + (moSel.offsetWidth/2);
+      }
+    }catch(e){}
   }
 
   captureAuthFromHash();
