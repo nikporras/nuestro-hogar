@@ -230,7 +230,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v138";
+  var APP_VERSION = "v139";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -407,6 +407,7 @@
     monthOffset: 0,
     monthSelected: null,
     statsMonthOffset: 0,
+    workloadMonthOffset: 0,
     filterPerson: null,
     modal: null
   };
@@ -1960,6 +1961,32 @@
     });
     return t;
   }
+  // Tasks AND points (difficulty-weighted effort) left per person for a given
+  // month (monthOffset from the current month, 0 = this month). Powers the
+  // Stats "Workload split" so you can see both the count the balancer uses and
+  // the effort it ignores — and check any month, not just the current one.
+  function monthlyWorkload(monthOffset){
+    var off = monthOffset || 0;
+    var res = { tasks:[0,0], points:[0,0] };
+    if(!S.occurrences) return res;
+    var mFirst = new Date(TODAY.getFullYear(), TODAY.getMonth()+off, 1);
+    var mLast  = new Date(TODAY.getFullYear(), TODAY.getMonth()+off+1, 0);
+    var fromStr = ymd(mFirst), toStr = ymd(mLast);
+    var byId = {};
+    S.chores.forEach(function(c){ byId[String(c.id)] = c; });
+    Object.keys(S.occurrences).forEach(function(key){
+      var o = S.occurrences[key];
+      if(!o || o.tombstone || o.done) return;
+      if(o.assignee !== 0 && o.assignee !== 1) return;
+      var dash = key.indexOf("_"); if(dash < 0) return;
+      var dStr = key.slice(dash + 1);
+      if(dStr < fromStr || dStr > toStr) return;
+      res.tasks[o.assignee]++;
+      var c = byId[key.slice(0, dash)];
+      res.points[o.assignee] += c ? effortOf(c) : 2;
+    });
+    return res;
+  }
   // Per-chore monthly split — total occurrences this month per person
   // (counts done + undone, ignores tombstones). Used by the editor as a
   // small receipt showing where the chore's occurrences actually land,
@@ -2601,21 +2628,35 @@
     }
     wrap.appendChild(sCard);
 
-    // ----- Workload split — how many tasks each person has this month -----
-    var ap=monthlyTaskCounts(null); var apTot=ap[0]+ap[1]||1;
+    // ----- Workload split — tasks (+ points) per person, any month -----
+    var wlOff = S.workloadMonthOffset || 0;
+    var wl = monthlyWorkload(wlOff);
+    var ap = wl.tasks; var apTot = ap[0]+ap[1]||1;
+    var wlStart = new Date(TODAY.getFullYear(), TODAY.getMonth()+wlOff, 1);
+    var wlLbl = MONTHS[wlStart.getMonth()] + " " + wlStart.getFullYear();
+    if(wlOff === 0) wlLbl = "This month";
+    else if(wlOff === 1) wlLbl = "Next month · " + MONTHS[wlStart.getMonth()].slice(0,3);
     wrap.appendChild(h("div",{class:"section-title", text:"Workload split"}));
     var rep=h("div",{class:"vs-card"});
-    rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"},
-      h("div",{style:"font-size:12px;color:var(--muted);font-weight:700;"}, "Tasks left this month"),
+    rep.appendChild(h("div",{style:"display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;"},
+      navBtn("‹", function(){ S.workloadMonthOffset = wlOff - 1; render(); }),
+      h("div",{style:"flex:1;text-align:center;cursor:pointer;",
+        onClick:function(){ if(wlOff!==0){ S.workloadMonthOffset = 0; render(); } }},
+        h("div",{style:"font-size:13px;font-weight:800;", text:wlLbl}),
+        h("div",{style:"font-size:11px;color:var(--muted);font-weight:700;", text:"tasks left"})
+      ),
+      navBtn("›", function(){ S.workloadMonthOffset = wlOff + 1; render(); })
+    ));
+    rep.appendChild(h("div",{style:"display:flex;justify-content:center;margin-bottom:12px;"},
       h("button",{
-        style:"border:1.5px solid var(--accent2);background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12px;padding:5px 11px;border-radius:14px;cursor:pointer;",
+        style:"border:1.5px solid var(--accent2);background:var(--soft-accent);color:var(--soft-accent-text);font:inherit;font-weight:700;font-size:12px;padding:5px 14px;border-radius:14px;cursor:pointer;",
         onClick: openRebalancePreview,
         text:"↔ Rebalance"
       })
     ));
     [0,1].forEach(function(p){
       var pct=Math.round(ap[p]/apTot*100);
-      var taskLbl = ap[p] === 1 ? "1 task" : ap[p] + " tasks";
+      var taskLbl = (ap[p] === 1 ? "1 task" : ap[p] + " tasks") + " · " + wl.points[p] + " pts";
       rep.appendChild(h("div",{class:"vs-row"},
         h("div",{class:"vs-top"},
           h("div",{class:"vs-name"}, h("span",{style:"width:11px;height:11px;border-radius:50%;display:inline-block;background:"+PC[p].c}), S.names[p]),
@@ -2624,7 +2665,7 @@
         h("div",{class:"vs-bar"}, h("div",{class:"vs-fill", style:"width:"+pct+"%;background:"+PC[p].c}))
       ));
     });
-    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;", text:"Counts tasks (not difficulty). New Alternate chores start on whoever has fewer — the split balances itself."}));
+    rep.appendChild(h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;text-align:center;line-height:1.4;", text:"Bars balance by task count (not points). Points show the effort behind those tasks — if the counts are even but points aren't, the heavier load is uneven."}));
     wrap.appendChild(rep);
 
     // Monthly leaderboard with ‹ › navigation back to previous months.
