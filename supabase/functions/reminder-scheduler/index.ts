@@ -7,10 +7,20 @@
 // Requires env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAPID_PUBLIC_KEY,
 // VAPID_PRIVATE_KEY, (optional) VAPID_SUBJECT.
 //
-// One schema change this version needs — a per-phone digest preference:
+// Schema this version needs (run both in the SQL editor):
+//   -- per-phone digest preference ('off' | '9am' | '6pm' | 'both'; null = '9am')
 //   alter table push_subscriptions add column if not exists digest text default '9am';
-// (values: 'off' | '9am' | '6pm' | 'both'. Null is treated as '9am'.)
-// No change needed to sent_task_digests — the per-slot key is encoded into `day`.
+//   -- dedicated, TEXT-keyed digest dedup table (the old sent_task_digests.day
+//   -- column may be a DATE, which rejected the "YYYY-MM-DD#hour" slot key and
+//   -- caused a re-send-every-run loop). This one is always safe.
+//   create table if not exists sent_digests_v2 (
+//     endpoint text not null,
+//     slot_key text not null,
+//     sent_at  timestamptz default now(),
+//     primary key (endpoint, slot_key)
+//   );
+// All three sections now CLAIM the dedup row before sending (fail-closed):
+// if the row can't be written, nothing is sent — a broken table never spams.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import webpush from "npm:web-push@3.6.7";
@@ -121,24 +131,24 @@ Deno.serve(async () => {
   if (dueReminders.length > 0) {
     const { data: subs } = await supabase.from("push_subscriptions").select("*");
     for (const r of dueReminders) {
+      // Record the send FIRST, so a failed write can't trigger a re-send loop.
+      // (The 55-min gap check reads this timestamp next run.)
+      const { error: recErr } = await supabase.from("sent_notifications").upsert({
+        reminder_id: String(r.id), sent_at: new Date().toISOString(),
+      });
+      if (recErr) continue;
       const payload = JSON.stringify({
         title: "Olympaws", body: "🔔 " + r.text, url: "./", tag: "reminder-" + r.id,
       });
-      let anyOk = false;
       for (const s of subs ?? []) {
         // Target the assigned person only; a reminder with no assignee goes to both.
         if (r.assignee === 0 || r.assignee === 1) {
           const sidx = EMAIL_TO_INDEX[String(s.email ?? "").toLowerCase()];
           if (sidx !== r.assignee) continue;
         }
-        if (await sendPush(s, payload)) anyOk = true;
+        await sendPush(s, payload);
       }
-      if (anyOk) {
-        await supabase.from("sent_notifications").upsert({
-          reminder_id: String(r.id), sent_at: new Date().toISOString(),
-        });
-        reminderPushes++;
-      }
+      reminderPushes++;
     }
   }
 
@@ -155,12 +165,14 @@ Deno.serve(async () => {
     const { day, hour } = localParts(s.tz);
     if (!hours.includes(hour)) continue;
 
-    // Per (endpoint, day, hour) dedup — encoded into `day` so no new column.
-    const slotDay = day + "#" + hour;
-    const { data: already } = await supabase
-      .from("sent_task_digests").select("endpoint")
-      .eq("endpoint", s.endpoint).eq("day", slotDay).maybeSingle();
-    if (already) continue;
+    // Claim this (phone, day, hour) slot up-front with a unique insert. If it's
+    // already claimed (duplicate) OR the row can't be written, SKIP — never
+    // re-send in a loop. Uses a dedicated TEXT-keyed table so no date-typed
+    // column can reject the slot key (that was the every-6-minutes spam).
+    const slotKey = day + "#" + hour;
+    const { error: claimErr } = await supabase
+      .from("sent_digests_v2").insert({ endpoint: s.endpoint, slot_key: slotKey });
+    if (claimErr) continue;
 
     const userIdx = EMAIL_TO_INDEX[String(s.email).toLowerCase()];
     const today = localDateForTz(s.tz);
@@ -187,10 +199,7 @@ Deno.serve(async () => {
       }
     }
 
-    if (todays.length === 0 && overdue === 0) {
-      await supabase.from("sent_task_digests").insert({ endpoint: s.endpoint, day: slotDay });
-      continue;
-    }
+    if (todays.length === 0 && overdue === 0) continue; // nothing to say (slot already claimed)
 
     const list = todays.map((c) => (c.icon ? c.icon + " " : "") + c.name).slice(0, 6).join(", ");
     const more = todays.length > 6 ? " +" + (todays.length - 6) + " more" : "";
@@ -199,13 +208,10 @@ Deno.serve(async () => {
       ? (hour >= 12 ? "Still to do (" + todays.length + ")" : "Today's tasks (" + todays.length + ")")
       : overdue + " overdue task" + (overdue === 1 ? "" : "s");
     const payload = JSON.stringify({
-      title, body: (list + more + overStr) || "Nothing scheduled.", url: "./", tag: "digest-" + slotDay,
+      title, body: (list + more + overStr) || "Nothing scheduled.", url: "./", tag: "digest-" + slotKey,
     });
 
-    if (await sendPush(s, payload)) {
-      await supabase.from("sent_task_digests").insert({ endpoint: s.endpoint, day: slotDay });
-      digests++;
-    }
+    if (await sendPush(s, payload)) digests++;
   }
 
   // ---- 3) Redemption pushes — notify the OTHER person ----
@@ -222,6 +228,11 @@ Deno.serve(async () => {
       const { data: allSubs2 } = await supabase.from("push_subscriptions").select("*");
 
       for (const red of newReds) {
+        // Claim FIRST (unique insert). If already recorded or the write fails,
+        // skip — so a redemption can't be re-announced every run.
+        const { error: claimErr } = await supabase
+          .from("sent_redemptions").insert({ redemption_id: String(red.id) });
+        if (claimErr) continue;
         const who = (red.by === 0 || red.by === 1) ? red.by : 0;
         const redeemerEmail = (indexToEmail[who] || "").toLowerCase();
         const payload = JSON.stringify({
@@ -233,7 +244,6 @@ Deno.serve(async () => {
           if (s.email && s.email.toLowerCase() === redeemerEmail) continue;
           if (await sendPush(s, payload)) redPushes++;
         }
-        await supabase.from("sent_redemptions").insert({ redemption_id: String(red.id) });
       }
     }
   }
