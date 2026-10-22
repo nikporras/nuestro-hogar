@@ -139,7 +139,9 @@
     transition:all .15s ease;background:transparent;
   }
   .check.on{border-color:var(--ink);background:var(--done);}
-  .card-icon{font-size:20px;line-height:1;width:26px;text-align:center;flex-shrink:0;}
+  /* Sized to sit level with the 30px checkbox; nowrap + min-width keeps
+     two-emoji icons (e.g. 🐱🧽) side by side instead of stacking. */
+  .card-icon{font-size:24px;line-height:1;min-width:30px;text-align:center;flex-shrink:0;white-space:nowrap;}
   .card-main{flex:1;min-width:0;}
   .card-name{font-size:15px;font-weight:600;}
   .card.done .card-name{text-decoration:line-through;text-decoration-thickness:2px;color:var(--muted);}
@@ -160,7 +162,7 @@
   .card.task-row{padding:8px 11px;margin-bottom:10px;gap:10px;box-shadow:3px 3px 0 var(--shade);}
   .card.task-row .card-name{font-size:14px;}
   .card.task-row .card-tags{margin-top:3px;}
-  .card.task-row .card-icon{font-size:18px;width:22px;}
+  .card.task-row .card-icon{font-size:21px;min-width:26px;}
   .task-when{font-size:11px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:5px;}
   .when-ic svg{width:13px;height:13px;}
 
@@ -282,7 +284,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v153";
+  var APP_VERSION = "v154";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
