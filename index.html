@@ -154,6 +154,12 @@
   .tag .lock-ic svg{width:10px;height:10px;}
   .seg .lock-ic svg{width:13px;height:13px;}
   .when-ic{display:inline-flex;}
+  /* Tasks tab rows: three lines (name, tags, schedule), so keep them tighter than Today's cards. */
+  .card.task-row{padding:8px 11px;margin-bottom:10px;gap:10px;box-shadow:3px 3px 0 var(--ink);}
+  .card.task-row .card-name{font-size:14px;}
+  .card.task-row .card-tags{margin-top:3px;}
+  .card.task-row .card-icon{font-size:18px;width:22px;}
+  .task-when{font-size:11px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:5px;}
   .when-ic svg{width:13px;height:13px;}
 
   .today-ring{outline:2px solid var(--accent2);outline-offset:1px;}
@@ -274,7 +280,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v151";
+  var APP_VERSION = "v152";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -4462,10 +4468,10 @@
         h("span",{class:"tag", style:"--c:"+DIFF[eff].color, text:eff+" pt"}),
         h("span",{class:"tag person", style:"--c:"+pColor(c.assignee)}, (c.assignee!=null && c.pinned) ? lockIcon() : null, (c.assignee==null?"":(c.pinned?"":c.rotate?"↻ ":""))+pName(c.assignee))
       ),
-      h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
+      h("div",{class:"task-when"},
         h("span",{class:"when-ic", html:ICON_SVG.cal}), h("span",{text:when}))
     );
-    return h("div",{class:"card", style:"cursor:pointer;align-items:flex-start;", onClick:function(){ openEdit(c); }},
+    return h("div",{class:"card task-row", style:"cursor:pointer;", onClick:function(){ openEdit(c); }},
       h("div",{class:"card-icon", text:c.icon, style:c.archived?"opacity:0.55;":""}),
       main,
       h("div",{style:"color:var(--muted);font-size:20px;margin-left:4px;", text:"›"})
