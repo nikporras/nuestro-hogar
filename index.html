@@ -30,8 +30,9 @@
     /* sticker system */
     --ink:#2b2350;          /* outline + hard shadow colour */
     --card-bd:#2b2350;      /* card outline (softer in dark) */
-    --pop:4px 4px 0 var(--ink);
-    --pop-sm:2px 2px 0 var(--ink);
+    --shade:#2b2350;        /* hard offset shadow behind stickers */
+    --pop:4px 4px 0 var(--shade);
+    --pop-sm:2px 2px 0 var(--shade);
     --shadow:var(--pop);
     --grad:radial-gradient(120% 140% at 0% 0%,#8a9bff 0%,transparent 45%),linear-gradient(140deg,var(--accent1),var(--accent2));
     --grad-flat:linear-gradient(140deg,var(--accent1),var(--accent2));
@@ -61,6 +62,7 @@
       --accent-text:#b8a2ff;
       --ink:#05040a;
       --card-bd:#34314a;
+      --shade:#3d3470;      /* near-black ink vanishes on the dark ground, so lift it to deep purple */
       --border:#34314a;
       --input-bg:#15141f;
       --soft-accent:#2a2540;
@@ -102,7 +104,7 @@
   .cat-say{display:flex;align-items:flex-end;gap:9px;margin-top:14px;}
   .cat-say img{width:60px;height:60px;border-radius:50%;border:2.5px solid var(--ink);background:#fff;flex-shrink:0;display:block;}
   .cat-say .bubble{flex:1;min-width:0;background:#fff;color:#2b2350;border:2px solid var(--ink);border-radius:16px 16px 16px 4px;
-    padding:8px 12px;font-size:13.5px;font-weight:500;line-height:1.35;box-shadow:3px 3px 0 var(--ink);}
+    padding:8px 12px;font-size:13.5px;font-weight:500;line-height:1.35;box-shadow:3px 3px 0 var(--shade);}
   .cat-say .bubble b{font-weight:700;}
   .cat-say .bubble{font-size:13.5px;line-height:1.3;}
   .progress-wrap{margin-top:14px;}
@@ -130,7 +132,7 @@
     box-shadow:var(--pop);display:flex;align-items:center;gap:11px;
     transition:transform .12s ease, box-shadow .12s ease, opacity .2s ease;
   }
-  .card.done{background:color-mix(in srgb,var(--done) 14%,var(--surface));box-shadow:1px 1px 0 var(--ink);transform:translate(3px,3px);}
+  .card.done{background:color-mix(in srgb,var(--done) 14%,var(--surface));box-shadow:1px 1px 0 var(--shade);transform:translate(3px,3px);}
   .check{
     width:30px;height:30px;border-radius:10px;border:2.5px solid var(--check-border);flex-shrink:0;
     display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;font-weight:700;color:#fff;
@@ -155,7 +157,7 @@
   .seg .lock-ic svg{width:13px;height:13px;}
   .when-ic{display:inline-flex;}
   /* Tasks tab rows: three lines (name, tags, schedule), so keep them tighter than Today's cards. */
-  .card.task-row{padding:8px 11px;margin-bottom:10px;gap:10px;box-shadow:3px 3px 0 var(--ink);}
+  .card.task-row{padding:8px 11px;margin-bottom:10px;gap:10px;box-shadow:3px 3px 0 var(--shade);}
   .card.task-row .card-name{font-size:14px;}
   .card.task-row .card-tags{margin-top:3px;}
   .card.task-row .card-icon{font-size:18px;width:22px;}
@@ -224,9 +226,9 @@
   .fab{
     position:fixed;right:calc(50% - 240px + 18px);bottom:96px;width:56px;height:56px;border-radius:18px;
     background:var(--grad-flat);color:#fff;border:2.5px solid var(--ink);font-size:30px;font-weight:600;
-    box-shadow:3px 3px 0 var(--ink);cursor:pointer;z-index:20;line-height:1;font-family:inherit;
+    box-shadow:3px 3px 0 var(--shade);cursor:pointer;z-index:20;line-height:1;font-family:inherit;
   }
-  .fab:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink);}
+  .fab:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--shade);}
   @media(max-width:480px){.fab{right:18px;}}
 
   /* Bottom nav */
@@ -264,8 +266,8 @@
   .seg button.on{border-color:var(--ink);background:var(--soft-accent);color:var(--soft-accent-text);box-shadow:var(--pop-sm);}
   .modal-actions{display:flex;gap:10px;margin-top:8px;}
   .btn{flex:1;padding:12px;border:2.5px solid transparent;border-radius:14px;font:inherit;font-weight:600;font-size:15px;cursor:pointer;}
-  .btn.primary{background:var(--grad-flat);color:#fff;border-color:var(--ink);box-shadow:3px 3px 0 var(--ink);}
-  .btn.primary:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink);}
+  .btn.primary{background:var(--grad-flat);color:#fff;border-color:var(--ink);box-shadow:3px 3px 0 var(--shade);}
+  .btn.primary:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--shade);}
   .btn.ghost{background:var(--ghost-btn);color:var(--muted);border-color:var(--border);}
   :focus-visible{outline:2.5px solid var(--accent-text);outline-offset:2px;}
   @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
@@ -280,7 +282,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v152";
+  var APP_VERSION = "v153";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.

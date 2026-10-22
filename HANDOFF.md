@@ -1,6 +1,6 @@
 # Olympaws — Handoff for a new chat
 
-Read this first, then `index.html`. Current app version: **v152** (Edge Function updated separately, see §6).
+Read this first, then `index.html`. Current app version: **v153** (Edge Function updated separately, see §6).
 
 ## 1. What it is
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
