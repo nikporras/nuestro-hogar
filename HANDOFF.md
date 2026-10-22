@@ -1,6 +1,6 @@
 # Olympaws — Handoff for a new chat
 
-Read this first, then `index.html`. Current app version: **v149** (Edge Function updated separately, see §6).
+Read this first, then `index.html`. Current app version: **v150** (Edge Function updated separately, see §6).
 
 ## 1. What it is
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
@@ -45,5 +45,9 @@ Sends (a) reminders to the assigned person, hourly until done, 24h cap; (b) per-
 - Google Calendar: only one-off `.ics` export exists ("Send to calendar"); a subscribed feed via Edge Function was discussed, not built.
 - Ideas the user liked but not built: date-hashed daily bonus chore, streak multipliers, time-estimate tags, "catch-up" (least-completed) assignment mode.
 
-## 8. In progress when this chat ended
-User asked about a **fresh visual redesign**. Decisions: **visual re-skin only** (CSS/tokens, same screens and logic) and **"show me options first"** — next step is to mock up 2–3 aesthetic directions as a preview (e.g. same identity modernized / clean minimal / bolder playful) for the user to pick, then implement the chosen one on the branch. Keep the single-file PWA, keep cats (Atena/Thor/Rum) and paw assets unless told otherwise. Do not start the real re-skin until the user picks.
+## 8. v150 redesign
+- Visual re-skin only: "Playful" sticker style (thick ink outlines, hard offset shadows, done cards press in) in the purple palette. Same screens and logic.
+- Font: Fredoka, bundled at `fonts/fredoka-latin.woff2` (OFL, `fonts/OFL.txt`); CSP gained `font-src 'self'`; the font is in the SW shell.
+- Tags now take their hue from a `--c` CSS variable (tinted outlined pills), not inline `background`.
+- Bottom menu uses inline line icons (`ICON_SVG`), no emoji.
+- Header shows a daily cat line (`CAT_SAYS`, 30 lines): cat rotates Atena, Thor, Rum by date; line depends on board state (none/some/rolled/all/holiday). Personalities: Atena food obsessed, Thor only wants Caro (`S.names[1]`) in bed, Rum a silly orange cat.
