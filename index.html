@@ -285,7 +285,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v155";
+  var APP_VERSION = "v156";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2623,7 +2623,7 @@
       h("div",{class:"check"+(r.done?" on":""), onClick:function(e){ e.stopPropagation(); toggleReminder(r); }}, r.done?"✓":""),
       h("div",{class:"card-icon", text:"📝"}),
       main,
-      h("div",{style:"cursor:pointer;color:var(--muted);font-size:17px;padding:0 4px;", text:"🗑️", onClick:function(e){ e.stopPropagation(); if(confirm("Delete this reminder?")) deleteReminder(r); }})
+      h("div",{style:"cursor:pointer;color:var(--muted);font-size:22px;line-height:1;padding:0 8px 0 4px;align-self:center;", title:"Delete reminder", text:"×", onClick:function(e){ e.stopPropagation(); if(confirm("Delete this reminder?")) deleteReminder(r); }})
     );
   }
   function remindersSection(){
