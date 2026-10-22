@@ -11,9 +11,11 @@
 <title>Olympaws</title>
 <style>
   /* Pixel Operator + Pixel Operator 8 by Jayvee Enaguas, CC0 1.0 (public domain).
-     Bundled locally so the CSP can stay 'self'-only. */
-  @font-face{ font-family:"Pixel Operator"; font-weight:400; font-display:swap; src:url("./fonts/PixelOperator.ttf") format("truetype"); }
-  @font-face{ font-family:"Pixel Operator"; font-weight:700; font-display:swap; src:url("./fonts/PixelOperator-Bold.ttf") format("truetype"); }
+     Bundled locally so the CSP can stay 'self'-only. Pixel Operator's x-height
+     is small (0.44em), so size-adjust scales just that face (not emoji) to read
+     like the sans sizes the layout and inline styles were written for. */
+  @font-face{ font-family:"Pixel Operator"; font-weight:400; font-display:swap; size-adjust:120%; src:url("./fonts/PixelOperator.ttf") format("truetype"); }
+  @font-face{ font-family:"Pixel Operator"; font-weight:700; font-display:swap; size-adjust:120%; src:url("./fonts/PixelOperator-Bold.ttf") format("truetype"); }
   @font-face{ font-family:"Pixel Operator 8"; font-weight:400; font-display:swap; src:url("./fonts/PixelOperator8.ttf") format("truetype"); }
   @font-face{ font-family:"Pixel Operator 8"; font-weight:700; font-display:swap; src:url("./fonts/PixelOperator8-Bold.ttf") format("truetype"); }
   /* v150 look: pixel type, sticker cards (thick ink outline + hard offset shadow) in the purple Olympaws palette. */
@@ -81,15 +83,12 @@
   body.modal-open{overflow:hidden;}
   body{
     font-family:var(--font);
-    /* Pixel Operator's x-height is small (0.44em); scale it to read like the
-       sans sizes the layout (and many inline styles) were written for. */
-    font-size-adjust:0.53;
     -webkit-font-smoothing:none; font-smooth:never;
     background:var(--bg); color:var(--text);
     max-width:480px; margin:0 auto; min-height:100vh;
     padding-bottom:84px;
   }
-  button,input,select,textarea{font-family:inherit;font-size-adjust:inherit;}
+  button,input,select,textarea{font-family:inherit;}
 
   /* Header */
   .header{
@@ -97,7 +96,7 @@
     color:var(--header-text); padding:54px 18px 18px; /* top band clears the floating streak/Purr chips */
     border-bottom:2.5px solid var(--ink);
   }
-  .header .title{display:flex;align-items:center;gap:8px;font-family:var(--font-title);font-size-adjust:none;font-size:24px;font-weight:700;line-height:1.1;}
+  .header .title{display:flex;align-items:center;gap:8px;font-family:var(--font-title);font-size:24px;font-weight:700;line-height:1.1;}
   .header .sub{font-size:13.5px;font-weight:500;opacity:.9;margin-top:3px;}
   /* Daily cat line */
   .cat-say{display:flex;align-items:flex-end;gap:9px;margin-top:14px;}
@@ -121,9 +120,9 @@
 
   /* Content */
   .content{padding:16px 14px 8px;}
-  .section-title{font-family:var(--font-title);font-size-adjust:none;font-size:16px;font-weight:700;color:var(--text);margin:8px 4px 10px;}
+  .section-title{font-family:var(--font-title);font-size:16px;font-weight:700;color:var(--text);margin:8px 4px 10px;}
   /* Date headings that sit between ‹ › arrows are too long for the wide 8px face. */
-  .section-title[style*="margin:0"]{font-family:var(--font);font-size-adjust:inherit;font-size:15px;}
+  .section-title[style*="margin:0"]{font-family:var(--font);font-size:15px;}
 
   /* Chore card */
   .card{
@@ -138,7 +137,7 @@
     transition:all .15s ease;background:transparent;
   }
   .check.on{border-color:var(--ink);background:var(--done);}
-  .card-icon{font-size:24px;width:30px;text-align:center;flex-shrink:0;}
+  .card-icon{font-size:20px;line-height:1;width:26px;text-align:center;flex-shrink:0;}
   .card-main{flex:1;min-width:0;}
   .card-name{font-size:15px;font-weight:600;}
   .card.done .card-name{text-decoration:line-through;text-decoration-thickness:2px;color:var(--muted);}
@@ -149,6 +148,11 @@
     color:color-mix(in srgb,var(--c) 78%,var(--text));
     border:1.5px solid color-mix(in srgb,var(--c) 55%,transparent);}
   .tag.person{cursor:pointer;}
+  .lock-ic{display:inline-flex;vertical-align:-1px;margin-right:4px;opacity:.75;}
+  .lock-ic svg{width:12px;height:12px;}
+  .tag .lock-ic{margin-right:3px;vertical-align:0;}
+  .tag .lock-ic svg{width:10px;height:10px;}
+  .seg .lock-ic svg{width:13px;height:13px;}
   .when-ic{display:inline-flex;}
   .when-ic svg{width:13px;height:13px;}
 
@@ -237,7 +241,7 @@
   /* Modal */
   .overlay{position:fixed;inset:0;background:var(--overlay);display:flex;align-items:flex-end;justify-content:center;z-index:40;}
   .modal{background:var(--surface);color:var(--text);width:100%;max-width:480px;border-radius:24px 24px 0 0;border:2.5px solid var(--card-bd);border-bottom:0;padding:20px 18px 26px;max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}
-  .modal h3{margin:0 0 16px;font-family:var(--font-title);font-size-adjust:none;font-size:16px;font-weight:700;line-height:1.3;}
+  .modal h3{margin:0 0 16px;font-family:var(--font-title);font-size:16px;font-weight:700;line-height:1.3;}
   .modal.tall{height:84vh;max-height:84vh;display:flex;flex-direction:column;}
   .sheet-top{flex-shrink:0;cursor:grab;}
   .grab{width:40px;height:5px;border-radius:3px;background:var(--grab);margin:0 auto 12px;}
@@ -270,7 +274,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v150";
+  var APP_VERSION = "v151";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2291,7 +2295,7 @@
     // ↔ marks an occurrence that the monthly rebalance pass swapped from
     // the natural alternation rhythm to even out the month total.
     var swapped = (function(){ var o = occ(ch, date); return !!(o && o.balanced); })();
-    // 🔒 on the card means "this chore is Fixed to a person" — a template
+    // The lock on the card means "this chore is Fixed to a person" — a template
     // fact. (Occurrence-level pinned stopped meaning anything once every
     // generated record carried it.)
     var lock = !!ch.pinned && (ch.assignee === 0 || ch.assignee === 1);
@@ -2311,7 +2315,7 @@
       h("div",{class:"check"+(done?" on":""), onClick:function(e){ e.stopPropagation(); toggleDone(ch,date); }}, done?"✓":""),
       h("div",{class:"card-icon", style:"cursor:pointer", text:ch.icon, onClick:openSheet}),
       h("div",{class:"card-main"},
-        h("div",{class:"card-name", style:"cursor:pointer", text:(lock?"🔒 ":"")+ch.name, onClick:openSheet}),
+        h("div",{class:"card-name", style:"cursor:pointer", onClick:openSheet}, lock ? lockIcon() : null, ch.name),
         h.apply(null, ["div",{class:"card-tags"}].concat(tagKids))
       )
     ];
@@ -3693,7 +3697,7 @@
     var modeBtns = h("div",{class:"seg"});
     var modes = [
       ["rotate", "↻ Alternate", "Takes turns — " + S.names[0] + " ↔ " + S.names[1] + " each time"],
-      ["fixed",  "🔒 Fixed",    "Always " + (d.assignee != null ? S.names[d.assignee] : "this person")]
+      ["fixed",  "Fixed",    "Always " + (d.assignee != null ? S.names[d.assignee] : "this person")]
     ];
     var currentMode = d.rotate ? "rotate" : "fixed";
     modes.forEach(function(m){
@@ -3703,9 +3707,8 @@
           d.rotate = (m[0] === "rotate");
           d.pinned = (m[0] === "fixed");
           render();
-        },
-        text: m[1]
-      }));
+        }
+      }, m[0] === "fixed" ? lockIcon() : null, m[1]));
     });
     var modeHint = h("div",{style:"font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;",
       text: (modes.filter(function(m){ return m[0] === currentMode; })[0] || modes[0])[2] });
@@ -4451,13 +4454,13 @@
           ? (sameDay(d, TODAY) ? "Today" : DOW_SHORT[d.getDay()]+" "+d.getDate()+" "+MONTHS[d.getMonth()].slice(0,3))
           : c.startDate; })()
       : scheduleLabel(c);
-    var prefix = (c.pinned ? "🔒 " : "") + (c.archived ? "✓ " : "");
+    var prefix = c.archived ? "✓ " : "";
     var main=h("div",{class:"card-main", style:c.archived?"opacity:0.6;":""},
-      h("div",{class:"card-name", text:prefix+c.name}),
+      h("div",{class:"card-name"}, c.pinned ? lockIcon() : null, prefix+c.name),
       h("div",{class:"card-tags"},
         freqTag,
         h("span",{class:"tag", style:"--c:"+DIFF[eff].color, text:eff+" pt"}),
-        h("span",{class:"tag person", style:"--c:"+pColor(c.assignee), text:(c.assignee==null?"":(c.pinned?"🔒 ":c.rotate?"↻ ":""))+pName(c.assignee)})
+        h("span",{class:"tag person", style:"--c:"+pColor(c.assignee)}, (c.assignee!=null && c.pinned) ? lockIcon() : null, (c.assignee==null?"":(c.pinned?"":c.rotate?"↻ ":""))+pName(c.assignee))
       ),
       h("div",{style:"font-size:11.5px;color:var(--muted);font-weight:600;margin-top:6px;display:flex;align-items:center;gap:5px;"},
         h("span",{class:"when-ic", html:ICON_SVG.cal}), h("span",{text:when}))
@@ -4532,6 +4535,7 @@
     home:  SVG_OPEN+'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg>',
     cal:   SVG_OPEN+'<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
     tasks: SVG_OPEN+'<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/></svg>',
+    lock:  SVG_OPEN.replace('stroke-width="2.2"','stroke-width="2.6"')+'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
     stats: SVG_OPEN+'<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8.5 20h7M10 17h4"/></svg>'
   };
 
@@ -4576,6 +4580,8 @@
                "<b>You're away.</b> Atena is rationing kibble. Dramatically."] }
   };
   var CAT_ORDER = ["Atena","Thor","Rum"];
+  // Small drawn padlock for Fixed tasks (replaces the 🔒 emoji).
+  function lockIcon(){ return h("span",{class:"lock-ic", title:"Fixed", html:ICON_SVG.lock}); }
   // Splits a "<b>lead</b> rest" template into DOM nodes; values are escaped
   // by going through text nodes, never innerHTML (names are user data).
   function catLine(tpl, vals){
