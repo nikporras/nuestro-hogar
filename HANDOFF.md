@@ -1,6 +1,6 @@
 # Olympaws — Handoff for a new chat
 
-Read this first, then `index.html`. Current app version: **v150** (Edge Function updated separately, see §6).
+Read this first, then `index.html`. Current app version: **v151** (Edge Function updated separately, see §6).
 
 ## 1. What it is
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
@@ -47,7 +47,7 @@ Sends (a) reminders to the assigned person, hourly until done, 24h cap; (b) per-
 
 ## 8. v150 redesign
 - Visual re-skin only: "Playful" sticker style (thick ink outlines, hard offset shadows, done cards press in) in the purple palette. Same screens and logic.
-- Fonts: Pixel Operator for text, Pixel Operator 8 for the "Olympaws" title, section headings and sheet titles (CC0, by Jayvee Enaguas; user supplied). TTFs in `fonts/`, in the SW shell; CSP gained `font-src 'self'`. Body uses `font-size-adjust:0.53` so the small pixel x-height reads like the old sans sizes (inline styles included); Pixel Operator 8 elements set `font-size-adjust:none` and use 16/24px. Date headings between ‹ › (`.section-title[style*="margin:0"]`) stay in Pixel Operator because the 8px face is too wide.
+- Fonts: Pixel Operator for text, Pixel Operator 8 for the "Olympaws" title, section headings and sheet titles (CC0, by Jayvee Enaguas; user supplied). TTFs in `fonts/`, in the SW shell; CSP gained `font-src 'self'`. The Pixel Operator @font-face uses `size-adjust:120%` so its small x-height reads like the old sans sizes (inline styles included) without inflating emoji; don't use `font-size-adjust` (it scales the emoji fallback too). Pixel Operator 8 elements use 16/24px. Fixed tasks show a drawn padlock (`lockIcon()`), not the 🔒 emoji. Date headings between ‹ › (`.section-title[style*="margin:0"]`) stay in Pixel Operator because the 8px face is too wide.
 - Tags now take their hue from a `--c` CSS variable (tinted outlined pills), not inline `background`.
 - Bottom menu uses inline line icons (`ICON_SVG`), no emoji.
 - Header shows a daily cat line (`CAT_SAYS`, 30 lines): cat rotates Atena, Thor, Rum by date; line depends on board state (none/some/rolled/all/holiday). Personalities: Atena food obsessed, Thor only wants Caro (`S.names[1]`) in bed, Rum a silly orange cat.
