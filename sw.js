@@ -26,7 +26,10 @@ const SHELL = [
   "./icons/purr.png",
   "./icons/streak.png",
   "./icons/level.png",
-  "./fonts/fredoka-latin.woff2"
+  "./fonts/PixelOperator.ttf",
+  "./fonts/PixelOperator-Bold.ttf",
+  "./fonts/PixelOperator8.ttf",
+  "./fonts/PixelOperator8-Bold.ttf"
 ];
 
 self.addEventListener("install", (event) => {

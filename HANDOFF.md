@@ -6,7 +6,7 @@ Read this first, then `index.html`. Current app version: **v150** (Edge Function
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
 
 ## 2. Workflow (important)
-- Dev branch: `claude/epic-ramanujan-yxjw7o`. After every change: commit → push branch → `git checkout main && git merge --ff-only <branch> && git push origin main` → back to branch. Pages deploys from `main`.
+- Dev branch: `claude/epic-ramanujan-yxjw7o` (v150 was built on `ccr-f8afecab-50yqqe`). After every change: commit → push branch → `git checkout main && git merge --ff-only <branch> && git push origin main` → back to branch. Pages deploys from `main`.
 - **Every shipped change bumps `APP_VERSION` in `index.html` AND `CACHE` in `sw.js`** (e.g. v149 → v150). The Settings footer shows the version.
 - Run `node scripts/smoke.js` before committing (parse + mock boot). Pre-commit hook runs it too. CI runs it (`.github/workflows/smoke.yml`).
 - Users update via the **↻ button** at the top of the app (force update: unregisters SW, clears caches, reloads). A plain refresh is not enough.
@@ -47,7 +47,7 @@ Sends (a) reminders to the assigned person, hourly until done, 24h cap; (b) per-
 
 ## 8. v150 redesign
 - Visual re-skin only: "Playful" sticker style (thick ink outlines, hard offset shadows, done cards press in) in the purple palette. Same screens and logic.
-- Font: Fredoka, bundled at `fonts/fredoka-latin.woff2` (OFL, `fonts/OFL.txt`); CSP gained `font-src 'self'`; the font is in the SW shell.
+- Fonts: Pixel Operator for text, Pixel Operator 8 for the "Olympaws" title, section headings and sheet titles (CC0, by Jayvee Enaguas; user supplied). TTFs in `fonts/`, in the SW shell; CSP gained `font-src 'self'`. Body uses `font-size-adjust:0.53` so the small pixel x-height reads like the old sans sizes (inline styles included); Pixel Operator 8 elements set `font-size-adjust:none` and use 16/24px. Date headings between ‹ › (`.section-title[style*="margin:0"]`) stay in Pixel Operator because the 8px face is too wide.
 - Tags now take their hue from a `--c` CSS variable (tinted outlined pills), not inline `background`.
 - Bottom menu uses inline line icons (`ICON_SVG`), no emoji.
 - Header shows a daily cat line (`CAT_SAYS`, 30 lines): cat rotates Atena, Thor, Rum by date; line depends on board state (none/some/rolled/all/holiday). Personalities: Atena food obsessed, Thor only wants Caro (`S.names[1]`) in bed, Rum a silly orange cat.
