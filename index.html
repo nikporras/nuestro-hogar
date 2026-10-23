@@ -285,7 +285,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v156";
+  var APP_VERSION = "v157";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -2116,8 +2116,19 @@
 
   // ---------- personal reminders (one-off to-dos, e.g. "buy soap") ----------
   function isoFromLocal(s){ if(!s) return null; var dt=new Date(s); return isNaN(dt.getTime()) ? null : dt.toISOString(); }
-  function addReminder(text, who, remindAt){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:isoFromLocal(remindAt), done:false, ts:Date.now() }); save(); }
-  function updateReminder(r, text, who, remindAt){ r.text=text; r.assignee=who; r.remindAt=isoFromLocal(remindAt); save(); }
+  // How often a reminder's push repeats until it's marked done. Read by the
+  // Edge Function too (supabase/functions/reminder-scheduler). A reminder with
+  // no `repeat` field (made before v157) counts as "once".
+  var REMIND_REPEAT = [
+    ["once",  "Once",     "just once"],
+    ["1h",    "Hourly",   "every hour"],
+    ["3h",    "Every 3h", "every 3 hours"],
+    ["daily", "Daily",    "once a day"]
+  ];
+  function repeatOf(r){ var v = r && r.repeat; return REMIND_REPEAT.some(function(x){ return x[0]===v; }) ? v : "once"; }
+  function repeatPhrase(v){ var m = REMIND_REPEAT.filter(function(x){ return x[0]===v; })[0]; return m ? m[2] : "just once"; }
+  function addReminder(text, who, remindAt, repeat){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:isoFromLocal(remindAt), repeat:repeat||"once", done:false, ts:Date.now() }); save(); }
+  function updateReminder(r, text, who, remindAt, repeat){ r.text=text; r.assignee=who; r.remindAt=isoFromLocal(remindAt); r.repeat=repeat||"once"; save(); }
   // Format a "YYYY-MM-DDTHH:MM" local datetime for display.
   function formatWhen(s){ try{ var d=new Date(s); if(isNaN(d.getTime())) return s; return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}); }catch(e){ return s; } }
   // "YYYY-MM-DDTHH:MM" in the device's local time — what <input type="datetime-local"> wants.
@@ -2618,7 +2629,7 @@
         h("span",{class:"tag person", style:"--c:"+pColor(r.assignee), text:pName(r.assignee)})
       )
     );
-    if(r.remindAt){ main.appendChild(h("div",{style:"font-size:11.5px;color:var(--accent2);font-weight:600;margin-top:5px;", text:"🔔 "+formatWhen(r.remindAt)})); }
+    if(r.remindAt){ main.appendChild(h("div",{style:"font-size:11.5px;color:var(--accent-text);font-weight:600;margin-top:5px;", text:"🔔 "+formatWhen(r.remindAt)+" · "+repeatPhrase(repeatOf(r))})); }
     return h("div",{class:"card", style:"cursor:pointer;", onClick:function(){ openReminder(r); }},
       h("div",{class:"check"+(r.done?" on":""), onClick:function(e){ e.stopPropagation(); toggleReminder(r); }}, r.done?"✓":""),
       h("div",{class:"card-icon", text:"📝"}),
@@ -2646,9 +2657,9 @@
     var editing = (r && typeof r==="object" && "text" in r && "id" in r) ? r : null;
     reminderEditing = editing;
     if(editing){
-      reminderDraft = { text:editing.text, assignee:editing.assignee, remindAt:isoToLocalInput(editing.remindAt) };
+      reminderDraft = { text:editing.text, assignee:editing.assignee, remindAt:isoToLocalInput(editing.remindAt), repeat:repeatOf(editing) };
     } else {
-      reminderDraft = { text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"" };
+      reminderDraft = { text:"", assignee:(S.filterPerson!==null?S.filterPerson:null), remindAt:"", repeat:"once" };
     }
     S.modal="reminder"; render();
   }
@@ -2658,14 +2669,26 @@
     var textIn=h("input",{type:"text", placeholder:"e.g. Buy soap", value:d.text, onInput:function(e){ d.text=e.target.value; }});
     var assignSeg=h("div",{class:"seg"});
     [null,0,1].forEach(function(p){ assignSeg.appendChild(h("button",{class:(d.assignee===p?"on":""), onClick:function(){ d.assignee=p; render(); }, text:(p==null?"Anyone":S.names[p])})); });
-    var whenIn=h("input",{type:"datetime-local", value:d.remindAt||"", onInput:function(e){ d.remindAt=e.target.value; }});
+    // Re-render on commit only when the Repeat row needs to appear/disappear,
+    // so typing in the picker isn't interrupted.
+    var whenIn=h("input",{type:"datetime-local", value:d.remindAt||"",
+      onInput:function(e){ d.remindAt=e.target.value; },
+      onChange:function(e){ d.remindAt=e.target.value; if(!!d.remindAt !== !!document.querySelector(".modal .repeat-row")) render(); }});
+    var repeatSeg=h("div",{class:"seg"});
+    REMIND_REPEAT.forEach(function(m){ repeatSeg.appendChild(h("button",{class:(d.repeat===m[0]?"on":""), onClick:function(){ d.repeat=m[0]; render(); }, text:m[1]})); });
+    var repeatNote = {
+      once:  "One notification at this time.",
+      "1h":  "A notification at this time, then every hour until it's done (up to 24h).",
+      "3h":  "A notification at this time, then every 3 hours until it's done (up to 24h).",
+      daily: "A notification at this time, then once a day until it's done (up to 7 days)."
+    }[d.repeat] || "";
     var notifNote = (("Notification" in window) && Notification.permission==="granted")
-      ? "You'll get a notification at this time, then every hour until you mark it done (up to 24h)."
+      ? repeatNote
       : "Turn on notifications in Settings (⚙️) to be alerted at this time.";
     function commit(){
       if(!d.text.trim()) return;
-      if(editing){ updateReminder(reminderEditing, d.text.trim(), d.assignee, d.remindAt); }
-      else { addReminder(d.text.trim(), d.assignee, d.remindAt); }
+      if(editing){ updateReminder(reminderEditing, d.text.trim(), d.assignee, d.remindAt, d.repeat); }
+      else { addReminder(d.text.trim(), d.assignee, d.remindAt, d.repeat); }
       S.modal=null; reminderEditing=null; render();
     }
     var actions=h("div",{class:"modal-actions"},
@@ -2677,6 +2700,7 @@
         field("What", textIn),
         field("For", assignSeg),
         field("Remind me at (optional)", whenIn),
+        d.remindAt ? h("div",{class:"field repeat-row"}, h("label",{text:"Repeat"}), repeatSeg) : null,
         h("div",{style:"font-size:11px;color:var(--muted);margin:-6px 0 12px;", text:notifNote}),
         actions
       ));

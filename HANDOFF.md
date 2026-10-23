@@ -1,6 +1,6 @@
 # Olympaws — Handoff for a new chat
 
-Read this first, then `index.html`. Current app version: **v156** (Edge Function updated separately, see §6).
+Read this first, then `index.html`. Current app version: **v157** (Edge Function updated separately, see §6).
 
 ## 1. What it is
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
@@ -36,7 +36,7 @@ Read this first, then `index.html`. Current app version: **v156** (Edge Function
 - Notifications client: Settings shows ✅ only when truly armed (`pushArmed`); auto re-subscribes on open; "Daily task summary" selector Off/9 AM/6 PM/Both stored per phone and PATCHed as `digest` on the subscription row.
 
 ## 6. Edge Function (deployed, current)
-Sends (a) reminders to the assigned person, hourly until done, 24h cap; (b) per-phone digest at 9/18 local built from the **occurrences map**; (c) redemption notice to the other person. All dedup is **claim-before-send / fail-closed** (fixed a spam bug where Caro got pushes every ~6 min). Cron runs every few minutes; that is checking frequency, not send frequency.
+Sends (a) reminders to the assigned person, repeating per the reminder's `repeat` field (v157: `once` | `1h` | `3h` | `daily`; missing = once; 24h cap, 7 days for daily; a moved `remindAt` fires again); (b) per-phone digest at 9/18 local built from the **occurrences map**; (c) redemption notice to the other person. All dedup is **claim-before-send / fail-closed** (fixed a spam bug where Caro got pushes every ~6 min). Cron runs every few minutes; that is checking frequency, not send frequency.
 - Open item to verify: Nico (Android) hadn't received the 9 AM digest — likely his subscription row lacked `tz`; re-opening the app re-subscribes with tz. Confirm Caro's spam stopped.
 
 ## 7. Known/deferred

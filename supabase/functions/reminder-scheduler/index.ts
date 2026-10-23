@@ -2,7 +2,7 @@
 //
 // Deploy: paste this into your existing scheduled function (keep its slug/name)
 // and redeploy. Schedule it to run every ~15 minutes (so the 9am/6pm digest
-// windows and the hourly reminder re-fire are caught promptly).
+// windows and repeating reminders are caught promptly).
 //
 // Requires env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAPID_PUBLIC_KEY,
 // VAPID_PRIVATE_KEY, (optional) VAPID_SUBJECT.
@@ -36,8 +36,19 @@ webpush.setVapidDetails(
   Deno.env.get("VAPID_PRIVATE_KEY")!,
 );
 
-const REPEAT_GAP_MS = 55 * 60 * 1000;        // re-fire a reminder every ~hour
-const REPEAT_CAP_MS = 24 * 60 * 60 * 1000;   // …but stop 24h after remindAt
+// Per-reminder repeat (set in the app's reminder sheet, `r.repeat`).
+// gap = time between pushes (0 = send once), cap = stop this long after remindAt.
+// A reminder without `repeat` (made before app v157) counts as "once".
+const HOUR = 60 * 60 * 1000;
+const REPEAT_RULES: Record<string, { gap: number; cap: number }> = {
+  "once":  { gap: 0,         cap: 24 * HOUR },
+  "1h":    { gap: HOUR,      cap: 24 * HOUR },
+  "3h":    { gap: 3 * HOUR,  cap: 24 * HOUR },
+  "daily": { gap: 24 * HOUR, cap: 7 * 24 * HOUR },
+};
+// Cron runs every few minutes, so allow a little early to keep the cadence
+// from drifting a whole cron tick later each round.
+const GAP_SLACK_MS = 5 * 60 * 1000;
 const ROLLOVER_DAYS = 14;                    // overdue window, mirrors the app
 
 // digest preference → which local hours to send at.
@@ -110,7 +121,7 @@ Deno.serve(async () => {
 
   const now = Date.now();
 
-  // ---- 1) Reminder pushes (re-fire hourly until done, 24h cap) ----
+  // ---- 1) Reminder pushes (once, or repeating per r.repeat until done) ----
   // Only the assigned person is notified (null assignee → both).
   const { data: sentRows } = await supabase
     .from("sent_notifications").select("reminder_id, sent_at");
@@ -122,9 +133,13 @@ Deno.serve(async () => {
     if (!r || r.done || !r.remindAt) return false;
     const t = new Date(r.remindAt).getTime();
     if (isNaN(t) || t > now) return false;
-    if (now - t > REPEAT_CAP_MS) return false;
+    const rule = REPEAT_RULES[String(r.repeat)] ?? REPEAT_RULES["once"];
+    if (now - t > rule.cap) return false;
     const last = lastSent.get(String(r.id));
-    return !last || now - last >= REPEAT_GAP_MS;
+    // Nothing sent for this remindAt yet (new, or moved to a later time).
+    if (!last || last < t) return true;
+    if (!rule.gap) return false;
+    return now - last >= rule.gap - GAP_SLACK_MS;
   });
 
   let reminderPushes = 0;
@@ -132,7 +147,7 @@ Deno.serve(async () => {
     const { data: subs } = await supabase.from("push_subscriptions").select("*");
     for (const r of dueReminders) {
       // Record the send FIRST, so a failed write can't trigger a re-send loop.
-      // (The 55-min gap check reads this timestamp next run.)
+      // (The repeat-gap check reads this timestamp next run.)
       const { error: recErr } = await supabase.from("sent_notifications").upsert({
         reminder_id: String(r.id), sent_at: new Date().toISOString(),
       });
