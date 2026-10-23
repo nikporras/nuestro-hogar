@@ -285,7 +285,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v157";
+  var APP_VERSION = "v158";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -4459,21 +4459,33 @@
         return reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
       });
     }).then(function(sub){
+      // The upsert below uses the user's JWT. On app open after an hour or more
+      // the stored token has expired, so refresh it FIRST — otherwise the row
+      // write 401s and (after a ↻, which mints a new endpoint) the server is
+      // left with only the dead old endpoint and this phone gets nothing.
+      return ensureToken().then(function(){ return sub; });
+    }).then(function(sub){
       var j=sub.toJSON();
-      // If the endpoint changed since last time (a fresh subscription after the
-      // SW was cleared), delete the stale row so the scheduler stops delivering
-      // to a dead endpoint — a cause of pushes seeming to "rarely fire".
       var prev=null; try{ prev=JSON.parse(localStorage.getItem("nh_pushSub")||"null"); }catch(e){}
-      if(prev && prev.endpoint && prev.endpoint !== j.endpoint){
-        try{ fetch(SB_URL+"/rest/v1/push_subscriptions?endpoint=eq."+encodeURIComponent(prev.endpoint), { method:"DELETE", headers:authHeaders(true) }).catch(function(){}); }catch(e){}
-      }
-      try{ localStorage.setItem("nh_pushSub", JSON.stringify(j)); }catch(e){}
-      // Store this phone's subscription so the scheduler can deliver reminder pushes.
+      // Store this phone's subscription so the scheduler can deliver pushes.
       var tz=null; try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||null; }catch(e){}
       var hh=authHeaders(true); hh["Prefer"]="resolution=merge-duplicates";
       return fetch(SB_URL+"/rest/v1/push_subscriptions?on_conflict=endpoint", { method:"POST", headers:hh,
         body: JSON.stringify({ endpoint:j.endpoint, email:myEmail(), p256dh:j.keys.p256dh, auth:j.keys.auth, tz:tz }) })
-        .then(function(r){ var ok = !!(r && r.ok); if(ok !== pushArmed){ setPushArmed(ok); render(); } else { setPushArmed(ok); } if(ok) pushDigestPref(); });
+        .then(function(r){
+          var ok = !!(r && r.ok);
+          if(ok !== pushArmed){ setPushArmed(ok); render(); } else { setPushArmed(ok); }
+          if(!ok) return;
+          // Only remember the endpoint once the server has it, so a failed
+          // write is retried (and the stale row cleaned up) next time.
+          try{ localStorage.setItem("nh_pushSub", JSON.stringify(j)); }catch(e){}
+          pushDigestPref();
+          // If the endpoint changed (a fresh subscription after ↻ cleared the SW),
+          // delete the stale row so the scheduler stops delivering to a dead endpoint.
+          if(prev && prev.endpoint && prev.endpoint !== j.endpoint){
+            fetch(SB_URL+"/rest/v1/push_subscriptions?endpoint=eq."+encodeURIComponent(prev.endpoint), { method:"DELETE", headers:authHeaders(true) }).catch(function(){});
+          }
+        });
     }).catch(function(e){ console.warn("Push subscribe failed:", e); if(pushArmed){ setPushArmed(false); render(); } });
   }
 
@@ -4818,7 +4830,13 @@
     if(notifStatus() === "granted") subscribeToPush();
   }
   setInterval(function(){ if(isAuthed() && document.visibilityState!=="hidden") pullState(); }, 10000);
-  document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible") pullState(); });
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState!=="visible") return;
+    pullState();
+    // Coming back to the app: if this phone isn't confirmed registered with the
+    // server, try again (cheap; reuses the existing push subscription).
+    if(isAuthed() && notifStatus()==="granted" && !pushArmed) subscribeToPush();
+  });
   window.addEventListener("online", pullState);
 })();
 
