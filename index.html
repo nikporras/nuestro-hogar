@@ -285,7 +285,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v158";
+  var APP_VERSION = "v159";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -441,6 +441,10 @@
     occurrences: load("nh_occurrences", {}),
     balances: load("nh_balances", [0,0]),
     rewards: load("nh_rewards", []),
+    // Ids of deleted chores/rewards/reminders → when ("chore:123": ms). Synced,
+    // so a merge can tell "the other phone deleted this" from "the other phone
+    // never had it yet". Pruned after DELETED_KEEP_MS.
+    deleted: load("nh_deleted", {}),
     redemptions: load("nh_redemptions", []),
     badges: load("nh_badges", {}),
     maxStreaks: load("nh_maxStreaks", [0,0]),
@@ -538,6 +542,7 @@
     localStorage.setItem("nh_occurrences",JSON.stringify(S.occurrences));
     localStorage.setItem("nh_balances",JSON.stringify(S.balances));
     localStorage.setItem("nh_rewards",JSON.stringify(S.rewards));
+    localStorage.setItem("nh_deleted",JSON.stringify(S.deleted||{}));
     localStorage.setItem("nh_redemptions",JSON.stringify(S.redemptions));
     localStorage.setItem("nh_badges",JSON.stringify(S.badges));
     localStorage.setItem("nh_maxStreaks",JSON.stringify(S.maxStreaks));
@@ -585,7 +590,7 @@
   function addReward(name, cost){
     var c = Math.max(1, parseInt(cost, 10) || 1);
     S.rewards.push({
-      id: Date.now(),
+      id: Date.now(), lm: Date.now(),
       name: String(name).trim(),
       cost: c,
       addedBy: myEmail() || S.names[S.deviceUser],
@@ -594,13 +599,14 @@
     save();
   }
   function updateReward(r, name, cost){
+    touch(r);
     r.name = String(name).trim();
     r.cost = Math.max(1, parseInt(cost, 10) || 1);
     save();
   }
   function deleteReward(r){
     var i = S.rewards.indexOf(r);
-    if(i >= 0){ S.rewards.splice(i, 1); save(); render(); }
+    if(i >= 0){ markDeleted("reward", r.id); S.rewards.splice(i, 1); save(); render(); }
   }
   function redeemReward(r){
     var p = S.deviceUser;
@@ -1308,7 +1314,7 @@
     return refreshInFlight;
   }
 
-  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:bothOnHoliday(), holiday:(Array.isArray(S.holiday)?S.holiday:[false,false]), lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit, biweeklyModeMigrated:!!S.biweeklyModeMigrated }; }
+  function stateDoc(){ return { v:3, names:S.names, chores:S.chores, doneLog:S.doneLog, reminders:S.reminders, occurrences:S.occurrences, balances:S.balances, rewards:S.rewards, redemptions:S.redemptions, badges:S.badges, maxStreaks:S.maxStreaks, badgeBaselineDate:S.badgeBaselineDate, badgeBaselineAt:S.badgeBaselineAt, badgeBaselineBalances:S.badgeBaselineBalances, scheduleClearedAt:S.scheduleClearedAt, holidayMode:bothOnHoliday(), holiday:(Array.isArray(S.holiday)?S.holiday:[false,false]), lastBalanceMonth:S.lastBalanceMonth, rumMilestonesHit:S.rumMilestonesHit, biweeklyModeMigrated:!!S.biweeklyModeMigrated, deleted:S.deleted||{} }; }
   // ---------- merge-on-receive helpers ----------
   // The sync doc is last-writer-wins as a whole, which drops a record one phone
   // changed if the other's doc didn't have it. For the collections where a
@@ -1321,8 +1327,36 @@
   //  - redemptions: append-only union by id (never lose a redemption).
   //  - badges: union per person, earliest unlock timestamp (monotone).
   //  - maxStreaks: max per person (monotone personal best).
-  // chores/rewards/reminders/balances/names stay last-writer-wins so a real
-  // DELETION still propagates (union would resurrect deleted items).
+  //  - chores/rewards/reminders (v159): union by id, minus anything in the
+  //    synced `deleted` log; a conflict on the same id is won by the higher
+  //    `lm` (stamped by touch() on edits), else the incoming copy. Before this
+  //    they were last-writer-wins, so a phone that hadn't pulled yet could
+  //    push its older list and silently wipe a task the other phone just added.
+  // balances/names stay last-writer-wins.
+  var DELETED_KEEP_MS = 180 * 24 * 60 * 60 * 1000;
+  function touch(x){ if(x) x.lm = Date.now(); return x; }
+  function markDeleted(kind, id){ if(!S.deleted) S.deleted = {}; S.deleted[kind+":"+id] = Date.now(); }
+  function mergeDeleted(local, remote){
+    var out = {}, cutoff = Date.now() - DELETED_KEEP_MS;
+    [local||{}, remote||{}].forEach(function(m){
+      Object.keys(m).forEach(function(k){ var v = m[k]; if(typeof v==="number" && v > cutoff && !(out[k] >= v)) out[k] = v; });
+    });
+    return out;
+  }
+  function mergeList(local, remote, kind, deleted){
+    var byId = {}, order = [];
+    function take(x, incoming){
+      if(!x || x.id == null) return;
+      var k = String(x.id);
+      if(!(k in byId)){ byId[k] = x; order.push(k); return; }
+      var cur = byId[k], la = typeof cur.lm==="number" ? cur.lm : -1, lb = typeof x.lm==="number" ? x.lm : -1;
+      if(lb > la || (lb === la && incoming)) byId[k] = x;
+    }
+    (remote||[]).forEach(function(x){ take(x, true); });
+    (local||[]).forEach(function(x){ take(x, false); });
+    return order.filter(function(k){ return !deleted[kind+":"+k]; }).map(function(k){ return byId[k]; });
+  }
+  function idSig(list){ return (list||[]).map(function(x){ return x && x.id; }).sort().join(","); }
   function mergeOccMap(local, remote){
     var out = {}, keys = {};
     Object.keys(local||{}).forEach(function(k){ keys[k]=1; });
@@ -1364,13 +1398,15 @@
   // the union-safe collections so a concurrent pull can't drop a local edit.
   function applyDoc(d, replace){
     if(!d||typeof d!=="object") return;
-    if(Array.isArray(d.chores)) S.chores=d.chores;
+    if(!replace) S.deleted = mergeDeleted(S.deleted, d.deleted);
+    else S.deleted = mergeDeleted({}, d.deleted);
+    if(Array.isArray(d.chores)) S.chores = replace ? d.chores : mergeList(S.chores, d.chores, "chore", S.deleted);
     if(Array.isArray(d.names)&&d.names.length===2) S.names=d.names;
     if(d.doneLog&&typeof d.doneLog==="object") S.doneLog = replace ? d.doneLog : mergeKeyMap(S.doneLog, d.doneLog);
-    if(Array.isArray(d.reminders)) S.reminders=d.reminders;
+    if(Array.isArray(d.reminders)) S.reminders = replace ? d.reminders : mergeList(S.reminders, d.reminders, "reminder", S.deleted);
     if(d.occurrences&&typeof d.occurrences==="object") S.occurrences = replace ? d.occurrences : mergeOccMap(S.occurrences, d.occurrences);
     if(Array.isArray(d.balances)&&d.balances.length===2) S.balances=d.balances;
-    if(Array.isArray(d.rewards)) S.rewards=d.rewards;
+    if(Array.isArray(d.rewards)) S.rewards = replace ? d.rewards : mergeList(S.rewards, d.rewards, "reward", S.deleted);
     if(Array.isArray(d.redemptions)) S.redemptions = replace ? d.redemptions : mergeById(S.redemptions, d.redemptions);
     // Track whether the incoming badges blob carried leftover non per-person
     // keys — that means the remote was last written by a pre-v127 client and
@@ -1414,9 +1450,12 @@
     // If the remote was dirty, we converted biweekly tasks, OR we unlocked
     // something new, push the corrected doc back so other devices (and the
     // next pull) see the right state.
-    if(badgesDirty || biweeklyConverted || (newlyUnlocked && newlyUnlocked.length)){
+    // Also push back when this phone had tasks/rewards/reminders the remote
+    // was missing (e.g. it was overwritten by a phone that hadn't pulled yet).
+    var listsDiffer = !replace && (idSig(S.chores)!==idSig(d.chores) || idSig(S.rewards)!==idSig(d.rewards) || idSig(S.reminders)!==idSig(d.reminders));
+    if(badgesDirty || biweeklyConverted || listsDiffer || (newlyUnlocked && newlyUnlocked.length)){
       saveLocal();
-      pushState();
+      if(!mergingForPush) pushState();
     }
   }
 
@@ -1443,21 +1482,49 @@
         }).catch(function(){});
     });
   }
-  function pushNow(){
+  // Push = read → merge → conditional write. Read the server copy first and
+  // merge it in (so we never overwrite the partner's newer edits), then PATCH
+  // only if updated_at is still what we read. If the partner wrote in between,
+  // zero rows match and we go round again (bounded).
+  var mergingForPush = false;
+  function pushNow(attempt){
     pushTimer = null; // the debounce has fired — clear it so pullState resumes
     if(!isAuthed()) return;
-    // Capture the document synchronously NOW, before the async token/fetch — so
-    // if a pull overwrites S mid-flight, we still push the state we meant to.
-    var doc = stateDoc();
+    attempt = attempt || 0;
     ensureToken().then(function(ok){
       if(ok!==true) return;
-      var now=new Date().toISOString();
-      var hh=authHeaders(true); hh["Prefer"]="return=minimal";
-      fetch(SB_URL+"/rest/v1/household_state?id=eq.1", { method:"PATCH", headers:hh, body:JSON.stringify({ data:doc, updated_at:now, updated_by:myEmail() }) })
-        .then(function(r){ if(r.ok){ lastSyncedAt=Date.parse(now); } }).catch(function(){});
-    });
+      return fetch(SB_URL+"/rest/v1/household_state?id=eq.1&select=data,updated_at", { headers:authHeaders(true) })
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(rows){
+          if(!rows) return; // read failed — don't write blind; the next save/pull retries
+          var row = rows[0];
+          var hasRemote = row && row.data && typeof row.data==="object" && Object.keys(row.data).length;
+          if(hasRemote){
+            var remoteAt = row.updated_at ? Date.parse(row.updated_at) : 0;
+            if(remoteAt > lastSyncedAt){
+              mergingForPush = true;
+              try{ applyDoc(row.data); } finally { mergingForPush = false; }
+              saveLocal(); render();
+            }
+          }
+          var doc = stateDoc();
+          var now = new Date().toISOString();
+          var hh = authHeaders(true); hh["Prefer"] = "return=representation";
+          // Last attempt (or no prior row) writes unconditionally — we've already
+          // merged the latest copy, and a dropped push would be worse.
+          var guard = (row && row.updated_at && attempt < 3) ? "&updated_at=eq."+encodeURIComponent(row.updated_at) : "";
+          var url = SB_URL+"/rest/v1/household_state?id=eq.1&select=updated_at" + guard;
+          return fetch(url, { method:"PATCH", headers:hh, body:JSON.stringify({ data:doc, updated_at:now, updated_by:myEmail() }) })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(res){
+              if(Array.isArray(res) && res.length){ lastSyncedAt = Date.parse(now); return; }
+              // Someone wrote between our read and write — merge again and retry.
+              if(Array.isArray(res) && attempt < 3) pushNow(attempt + 1);
+            });
+        });
+    }).catch(function(){});
   }
-  function pushState(immediate){ if(!isAuthed()) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow, immediate?0:1200); }
+  function pushState(immediate){ if(!isAuthed()) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(function(){ pushNow(0); }, immediate?0:1200); }
 
   function viewLogin(){
     var wrap=h("div",{style:"max-width:420px;margin:0 auto;padding:54px 24px;text-align:center;"});
@@ -1547,7 +1614,7 @@
       // obligation stranded on the helper (which would hit the helper's streak).
       if(o.wasCover != null){ o.assignee = o.wasCover; o.cover = o.wasCover; delete o.wasCover; }
       // Un-archive a one-time chore so the card comes back into the list.
-      if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
+      if(ch.kind === "oneTime" && ch.archived){ ch.archived = false; touch(ch); }
       if(prevAssignee === 0 || prevAssignee === 1){
         // Pass the old doneAt so the cache decrement matches the original
         // applyDoneToStats baseline filter (don't undo something we never counted).
@@ -1559,7 +1626,7 @@
       o.pinned = false;
       // One-time chores tuck themselves away on done so the Tasks tab stays
       // about 'what I still have'. The occurrence stays for history.
-      if(ch.kind === "oneTime") ch.archived = true;
+      if(ch.kind === "oneTime"){ ch.archived = true; touch(ch); }
       if(o.assignee === 0 || o.assignee === 1){
         S.balances[o.assignee] += pts;
         recordEvent("task_done", { chore: ch, date: date, assignee: o.assignee, doneAt: o.doneAt });
@@ -2127,14 +2194,14 @@
   ];
   function repeatOf(r){ var v = r && r.repeat; return REMIND_REPEAT.some(function(x){ return x[0]===v; }) ? v : "once"; }
   function repeatPhrase(v){ var m = REMIND_REPEAT.filter(function(x){ return x[0]===v; })[0]; return m ? m[2] : "just once"; }
-  function addReminder(text, who, remindAt, repeat){ S.reminders.push({ id:Date.now(), text:text, assignee:who, remindAt:isoFromLocal(remindAt), repeat:repeat||"once", done:false, ts:Date.now() }); save(); }
-  function updateReminder(r, text, who, remindAt, repeat){ r.text=text; r.assignee=who; r.remindAt=isoFromLocal(remindAt); r.repeat=repeat||"once"; save(); }
+  function addReminder(text, who, remindAt, repeat){ S.reminders.push({ id:Date.now(), lm:Date.now(), text:text, assignee:who, remindAt:isoFromLocal(remindAt), repeat:repeat||"once", done:false, ts:Date.now() }); save(); }
+  function updateReminder(r, text, who, remindAt, repeat){ touch(r); r.text=text; r.assignee=who; r.remindAt=isoFromLocal(remindAt); r.repeat=repeat||"once"; save(); }
   // Format a "YYYY-MM-DDTHH:MM" local datetime for display.
   function formatWhen(s){ try{ var d=new Date(s); if(isNaN(d.getTime())) return s; return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}); }catch(e){ return s; } }
   // "YYYY-MM-DDTHH:MM" in the device's local time — what <input type="datetime-local"> wants.
   function isoToLocalInput(iso){ try{ var d=new Date(iso); if(isNaN(d.getTime())) return ""; var p=function(n){return String(n).padStart(2,"0");}; return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes()); }catch(e){ return ""; } }
-  function toggleReminder(r){ r.done=!r.done; save(); render(); }
-  function deleteReminder(r){ var i=S.reminders.indexOf(r); if(i>=0){ S.reminders.splice(i,1); save(); render(); } }
+  function toggleReminder(r){ r.done=!r.done; touch(r); save(); render(); }
+  function deleteReminder(r){ var i=S.reminders.indexOf(r); if(i>=0){ markDeleted("reminder", r.id); S.reminders.splice(i,1); save(); render(); } }
   function openReminders(){
     return S.reminders.filter(function(r){
       if(r.done) return false;
@@ -3481,7 +3548,7 @@
     // keeps the series generator's hands off it.
     S.occurrences[key] = { assignee: ctx.assignee, done: false, doneAt: null, pinned: true, manual: true, lm: Date.now() };
     // A done-and-archived one-time comes back into view for its new day.
-    if(ch.kind === "oneTime" && ch.archived) ch.archived = false;
+    if(ch.kind === "oneTime" && ch.archived){ ch.archived = false; touch(ch); }
     addInstCtx = null; S.modal = null;
     save(); render();
   }
@@ -3600,6 +3667,7 @@
     var target=null;
     if(editingId){ for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ target=S.chores[i]; break; } } }
     if(!target){ target={ id:Date.now() }; S.chores.push(target); }
+    touch(target);
     var icon=(d.icon && d.icon.trim()) ? d.icon.trim() : guessIcon(d.name);
     target.name=d.name.trim(); target.freq=d.freq; target.assignee=d.assignee; target.icon=icon; target.effort=d.effort;
     // Assignment: when a person is set, exactly one of Alternate (rotate) /
@@ -3803,7 +3871,7 @@
         modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;",
           onClick:function(){
             if(!confirm("Delete \""+(draft.name||"this task")+"\"? This can't be undone.")) return;
-            for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
+            for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ markDeleted("chore", editingId); S.chores.splice(i,1); break; } }
             invalidateBadgeStats();
             save(); editingId=null; draftOriginal=null; S.modal=null; render();
           }, text:"Delete task" }));
@@ -3982,7 +4050,7 @@
       modalBody.push(h("button",{ style:"width:100%;margin-top:10px;padding:11px;border:none;border-radius:11px;background:var(--danger-bg);color:var(--danger);font:inherit;font-weight:700;cursor:pointer;",
         onClick:function(){
           if(!confirm("Delete \""+(draft.name||"this task")+"\"? This can't be undone.")) return;
-          for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ S.chores.splice(i,1); break; } }
+          for(var i=0;i<S.chores.length;i++){ if(S.chores[i].id===editingId){ markDeleted("chore", editingId); S.chores.splice(i,1); break; } }
           invalidateBadgeStats(); // template gone, cached contributions need a rebuild
           save(); editingId=null; draftOriginal=null; S.modal=null; render();
         }, text:"Delete task" }));

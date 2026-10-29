@@ -1,6 +1,6 @@
 # Olympaws — Handoff for a new chat
 
-Read this first, then `index.html`. Current app version: **v158** (Edge Function updated separately, see §6).
+Read this first, then `index.html`. Current app version: **v159** (Edge Function updated separately, see §6).
 
 ## 1. What it is
 "Olympaws" (repo `nikporras/nuestro-hogar`) — a household chore PWA for **two people: Nico (index 0, porras456@hotmail.com, Android) and Caro (index 1, carolina.montecchi@gmail.com, iPhone)**. Served from **GitHub Pages off `main`**. Each phone sets "This phone is used by" in Settings (`S.deviceUser`).
@@ -31,7 +31,7 @@ Read this first, then `index.html`. Current app version: **v158** (Edge Function
 - **Holiday per person** ("pause + optional cover"): that person's upcoming tasks get `cover`, excluded from their streak/workload/rollovers; partner sees "🏖 cover for X" and can complete for credit; undo returns it; both on = everything hidden.
 - **Streak**: a day counts if every owed (non-cover) task assigned to you is done. Stats has a "Your streak" card naming the day/task that broke it with "Go to" button.
 - **Stats**: Workload split (‹› per month, tasks + points), Month-by-month bars (oldest left → newest right, scrollable, tap month → "who did what" detail with points), badges per person.
-- **Sync = merge-on-receive** (`applyDoc(d, replace)`): occurrences union with `lm` last-modified stamps; redemptions/badges/maxStreaks/doneLog merged; chores/rewards/reminders/balances/names last-writer-wins (so deletions propagate). `replace=true` only for snapshot/backup restore. `pullState` defers while a push is pending; `pushNow` captures the doc synchronously.
+- **Sync = merge-on-receive** (`applyDoc(d, replace)`): occurrences union with `lm` last-modified stamps; redemptions/badges/maxStreaks/doneLog merged; since v159 chores/rewards/reminders also merge by id (higher `lm` wins; `touch()` stamps edits) minus a synced `deleted` log (`markDeleted(kind,id)`, kept 180 days) so deletions still propagate; balances/names stay last-writer-wins. `pushNow` reads the row, merges, then PATCHes with an `updated_at=eq.` guard and retries (last try unconditional). Before v159 a phone that hadn't pulled could push its older chore list and wipe a newly added task (that happened 2026-10-28: an orphan occurrence `1793198610131_2026-10-28` remains with no chore). `replace=true` only for snapshot/backup restore. `pullState` defers while a push is pending; `pushNow` captures the doc synchronously.
 - Other: past dates selectable when creating tasks; "📌 Extra day of a task"; Settings → "Restore full schedule"; weekly 4-slot local snapshots; full-state JSON backup (v2).
 - Notifications client: Settings shows ✅ only when truly armed (`pushArmed`); auto re-subscribes on open; "Daily task summary" selector Off/9 AM/6 PM/Both stored per phone and PATCHed as `digest` on the subscription row.
 
