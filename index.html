@@ -285,7 +285,7 @@
   // ---------- constants ----------
   // Bump alongside sw.js's CACHE on every shipping change so the Settings
   // footer reflects the bundle the user is actually running.
-  var APP_VERSION = "v159";
+  var APP_VERSION = "v160";
   var PC = [ {c:"#2196F3",bg:"#e8f4fd"}, {c:"#E91E63",bg:"#fce4ec"} ]; // person colors
   var FC = { "Daily":"#FF6B35", "Weekly":"#4CAF50", "Biweekly":"#9C27B0", "Monthly":"#FF9800" };
   // Difficulty / effort: the weight used to split the workload fairly.
@@ -1205,7 +1205,7 @@
   // off the synced doc so old "skip this day" records don't accumulate forever.
   function pruneOldTombstones(){
     if(!S.occurrences) return;
-    var cutoff = ymd(addDays(TODAY, -60));
+    var cutoff = ymd(addDays(TODAY, -STALE_OCC_DAYS));
     Object.keys(S.occurrences).forEach(function(key){
       var o = S.occurrences[key];
       if(!o || !o.tombstone) return;
@@ -1357,8 +1357,15 @@
     return order.filter(function(k){ return !deleted[kind+":"+k]; }).map(function(k){ return byId[k]; });
   }
   function idSig(list){ return (list||[]).map(function(x){ return x && x.id; }).sort().join(","); }
+  // A card older than this that only ONE side has, and that isn't done, is
+  // stale: the other side either skipped it (and pruneOldTombstones later
+  // swept the skip away) or never had it. Unioning it back resurrects a long-
+  // skipped day as "undone" and breaks the streak — which is what a browser
+  // with a months-old local copy did on 2026-10-29. Same window as the prune.
+  var STALE_OCC_DAYS = 60;
   function mergeOccMap(local, remote){
     var out = {}, keys = {};
+    var staleCutoff = ymd(addDays(TODAY, -STALE_OCC_DAYS));
     Object.keys(local||{}).forEach(function(k){ keys[k]=1; });
     Object.keys(remote||{}).forEach(function(k){ keys[k]=1; });
     Object.keys(keys).forEach(function(k){
@@ -1366,7 +1373,12 @@
       if(lo && ro){
         var la = (typeof lo.lm==="number")?lo.lm:-1, lb=(typeof ro.lm==="number")?ro.lm:-1;
         out[k] = (la!==lb) ? (la>lb?lo:ro) : ((!!lo.done!==!!ro.done) ? (lo.done?lo:ro) : ro);
-      } else out[k] = lo || ro;
+      } else {
+        var one = lo || ro;
+        var dash = k.indexOf("_");
+        if(one && !one.done && dash >= 0 && k.slice(dash + 1) < staleCutoff) return; // drop stale one-sided card
+        out[k] = one;
+      }
     });
     return out;
   }
